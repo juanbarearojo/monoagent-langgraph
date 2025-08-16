@@ -21,10 +21,10 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Push code to HF Space (exclude 2 model files)
+      - name: Push to Hugging Face Space (exclude cajon de sastre + model big files)
         env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}        # token con Write al Space
-          HF_SPACE_REPO: ${{ vars.HF_SPACE_REPO }} # ej: Barearojojuan/MonoAgent
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_SPACE_REPO: ${{ vars.HF_SPACE_REPO }}
         shell: bash
         run: |
           set -euo pipefail
@@ -33,25 +33,25 @@ jobs:
             HF_SPACE_REPO="Barearojojuan/MonoAgent"
           fi
 
-          # 1) Construir snapshot limpia EXCLUYENDO solo esos dos archivos
+          # --- Construir snapshot limpia con exclusiones específicas ---
           rm -rf _space_out
           mkdir -p _space_out
 
           rsync -a ./ _space_out \
             --exclude '.git' \
+            --exclude 'cajon_ de sastre/**' \
             --exclude 'model/labels.json' \
             --exclude 'model/monkey_classifier_ts-v0.1.pt'
 
-          # 2) Inicializar repo temporal y commitear
           cd _space_out
           git init
           git config user.email "actions@github.com"
           git config user.name "github-actions[bot]"
           git add -A
-          git commit -m "Deploy code (excluding model/labels.json and model/monkey_classifier_ts-v0.1.pt)"
+          git commit -m "Deploy (excluding cajon de sastre + model .pt + labels.json)"
 
-          # 3) Empujar esta instantánea al Space como main
           HF_URL="https://user:${HF_TOKEN}@huggingface.co/spaces/${HF_SPACE_REPO}"
           git remote add origin "${HF_URL}"
           git branch -M main
           git push origin main --force
+
