@@ -1,40 +1,40 @@
-name: Deploy to Hugging Face Space
+name: Mirror to HF Space
 
 on:
   push:
-    branches: [ "main" ]   # Cambia si tu rama por defecto es otra
-    paths-ignore:
-      - "README.md"
-      - ".github/ISSUE_TEMPLATE/**"
-      - ".gitignore"
-  workflow_dispatch: {}     # Permite lanzarlo manualmente
+    branches: [ "main" ]
+  workflow_dispatch: {}
 
 concurrency:
   group: deploy-space
   cancel-in-progress: true
 
 jobs:
-  sync-to-hf:
+  mirror:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # (Opcional) Verificación rápida de tamaño y archivos excluidos
-      - name: Show repository tree
-        run: |
-          git status
-          ls -lah
-
-      # Sincroniza TODO el repo a tu Space (limpia archivos eliminados)
       - name: Push to Hugging Face Space
-        uses: huggingface/hub-action@v1
-        with:
-          repo-token: ${{ secrets.HF_TOKEN }}
-          repo-type: space
-          repo: ${{ vars.HF_SPACE_REPO || 'Barearojojuan/MonoAgent' }}
-          revision: main          # Rama del Space (por defecto main)
-          clean: true             # Borra en el Space lo que se haya eliminado en GitHub
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}  # Token HF con permiso Write
+          HF_SPACE_REPO: ${{ vars.HF_SPACE_REPO }} # p.ej. Barearojojuan/MonoAgent
+        run: |
+          if [ -z "$HF_SPACE_REPO" ]; then
+            HF_SPACE_REPO="Barearojojuan/MonoAgent"
+          fi
+          git config user.email "actions@github.com"
+          git config user.name "github-actions[bot]"
+
+          # Añade remote autenticado (el token NO aparece en logs)
+          HF_URL="https://user:${HF_TOKEN}@huggingface.co/spaces/${HF_SPACE_REPO}"
+          git remote add hf "${HF_URL}" || git remote set-url hf "${HF_URL}"
+
+          # Sube solo la rama main; --force para mantener espejo exacto si cambias historial
+          git push hf HEAD:main --force
