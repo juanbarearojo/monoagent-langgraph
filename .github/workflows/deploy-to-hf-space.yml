@@ -21,10 +21,10 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Push to Hugging Face Space (ignoring model artifacts)
+      - name: Push code to HF Space (exclude 2 model files)
         env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          HF_SPACE_REPO: ${{ vars.HF_SPACE_REPO }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}        # token con Write al Space
+          HF_SPACE_REPO: ${{ vars.HF_SPACE_REPO }} # ej: Barearojojuan/MonoAgent
         shell: bash
         run: |
           set -euo pipefail
@@ -33,19 +33,25 @@ jobs:
             HF_SPACE_REPO="Barearojojuan/MonoAgent"
           fi
 
+          # 1) Construir snapshot limpia EXCLUYENDO solo esos dos archivos
+          rm -rf _space_out
+          mkdir -p _space_out
+
+          rsync -a ./ _space_out \
+            --exclude '.git' \
+            --exclude 'model/labels.json' \
+            --exclude 'model/monkey_classifier_ts-v0.1.pt'
+
+          # 2) Inicializar repo temporal y commitear
+          cd _space_out
+          git init
           git config user.email "actions@github.com"
           git config user.name "github-actions[bot]"
+          git add -A
+          git commit -m "Deploy code (excluding model/labels.json and model/monkey_classifier_ts-v0.1.pt)"
 
+          # 3) Empujar esta instantánea al Space como main
           HF_URL="https://user:${HF_TOKEN}@huggingface.co/spaces/${HF_SPACE_REPO}"
-          if git remote get-url hf >/dev/null 2>&1; then
-            git remote set-url hf "${HF_URL}"
-          else
-            git remote add hf "${HF_URL}"
-          fi
-
-          # --- quitar SOLO los dos archivos grandes del índice ---
-          git rm --cached -f model/labels.json || true
-          git rm --cached -f model/monkey_classifier_ts-v0.1.pt || true
-
-          # Empujar rama main (el resto de archivos sí se suben)
-          git push hf HEAD:main --force
+          git remote add origin "${HF_URL}"
+          git branch -M main
+          git push origin main --force
