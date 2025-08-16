@@ -1,14 +1,13 @@
 ---
-
-title: MonoAgent (LangGraph + Gradio)
-emoji: 🐒
+title: MonoAgent
+emoji: 🐵
 colorFrom: indigo
 colorTo: purple
 sdk: gradio
-sdk\_version: "latest"
-app\_file: app.py
+sdk_version: "4.44.0"
+app_file: app.py
 pinned: false
--------------
+---
 
 # MonoAgent — LangGraph + Gradio
 
