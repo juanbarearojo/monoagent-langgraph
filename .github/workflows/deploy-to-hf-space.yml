@@ -1,0 +1,40 @@
+name: Deploy to Hugging Face Space
+
+on:
+  push:
+    branches: [ "main" ]   # Cambia si tu rama por defecto es otra
+    paths-ignore:
+      - "README.md"
+      - ".github/ISSUE_TEMPLATE/**"
+      - ".gitignore"
+  workflow_dispatch: {}     # Permite lanzarlo manualmente
+
+concurrency:
+  group: deploy-space
+  cancel-in-progress: true
+
+jobs:
+  sync-to-hf:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # (Opcional) Verificación rápida de tamaño y archivos excluidos
+      - name: Show repository tree
+        run: |
+          git status
+          ls -lah
+
+      # Sincroniza TODO el repo a tu Space (limpia archivos eliminados)
+      - name: Push to Hugging Face Space
+        uses: huggingface/hub-action@v1
+        with:
+          repo-token: ${{ secrets.HF_TOKEN }}
+          repo-type: space
+          repo: ${{ vars.HF_SPACE_REPO || 'Barearojojuan/MonoAgent' }}
+          revision: main          # Rama del Space (por defecto main)
+          clean: true             # Borra en el Space lo que se haya eliminado en GitHub
