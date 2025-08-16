@@ -21,63 +21,10 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Install Git LFS
-        run: |
-          git lfs install
-
-      - name: Prepare repo for HF push (LFS + cleanup)
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          # Config git
-          git config user.email "actions@github.com"
-          git config user.name "github-actions[bot]"
-
-          # 1) Asegurar que los modelos en model/ usan LFS
-          # (solo si existen; evita fallos si el directorio no está)
-          if ls model/*.pt >/dev/null 2>&1; then
-            git lfs track "model/*.pt"
-          fi
-          if ls model/*.safetensors >/dev/null 2>&1; then
-            git lfs track "model/*.safetensors"
-          fi
-
-          # 2) Evitar subir artefactos locales pesados fuera de model/ (ej: export/)
-          #    - Añadimos export/ al .gitignore para esta réplica
-          #    - Quitamos del índice cualquier archivo grande fuera de model/
-          echo "export/" >> .gitignore || true
-
-          # Quitar del índice la carpeta export/ si existe (ruta con espacios segurizada)
-          if [ -d "cajon_ de sastre/vc_pruebas/export" ]; then
-            git rm -r --cached "cajon_ de sastre/vc_pruebas/export" || true
-          fi
-          if [ -d "export" ]; then
-            git rm -r --cached "export" || true
-          fi
-
-          # Quitar del índice cualquier archivo >10MiB que NO esté en model/
-          # (pre-receive hook de HF rechaza >10MiB sin LFS)
-          while IFS= read -r -d '' bigfile; do
-            echo "Removing large non-model file from index: $bigfile"
-            git rm --cached "$bigfile" || true
-          done < <(find . -type f -size +10M ! -path "./.git/*" ! -path "./model/*" -print0)
-
-          # Añadir/actualizar .gitattributes generado por 'git lfs track'
-          git add .gitattributes .gitignore || true
-
-          # Forzar a incluir los artefactos del modelo (en model/) en el commit local
-          if [ -d "model" ]; then
-            git add -f model || true
-          fi
-
-          # Commit local (no persiste en tu repo de GitHub; solo para el push a HF)
-          git commit -m "ci(hf-space): use LFS for model and ignore local exports" || true
-
-      - name: Push to Hugging Face Space
+      - name: Push to Hugging Face Space (ignoring model artifacts)
         env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}        # Token HF con permiso 'Write' al Space
-          HF_SPACE_REPO: ${{ vars.HF_SPACE_REPO }} # p.ej., Barearojojuan/MonoAgent
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_SPACE_REPO: ${{ vars.HF_SPACE_REPO }}
         shell: bash
         run: |
           set -euo pipefail
@@ -86,7 +33,9 @@ jobs:
             HF_SPACE_REPO="Barearojojuan/MonoAgent"
           fi
 
-          # Remote autenticado (el token no aparece en logs)
+          git config user.email "actions@github.com"
+          git config user.name "github-actions[bot]"
+
           HF_URL="https://user:${HF_TOKEN}@huggingface.co/spaces/${HF_SPACE_REPO}"
           if git remote get-url hf >/dev/null 2>&1; then
             git remote set-url hf "${HF_URL}"
@@ -94,5 +43,9 @@ jobs:
             git remote add hf "${HF_URL}"
           fi
 
-          # Empuja la rama actual como main al Space (mirror); --force para mantenerlo en sync
+          # --- quitar SOLO los dos archivos grandes del índice ---
+          git rm --cached -f model/labels.json || true
+          git rm --cached -f model/monkey_classifier_ts-v0.1.pt || true
+
+          # Empujar rama main (el resto de archivos sí se suben)
           git push hf HEAD:main --force
