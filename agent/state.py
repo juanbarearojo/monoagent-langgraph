@@ -16,7 +16,7 @@ def has_image(state: ChatVisionState) -> bool:
     return bool(state.get("image_bytes") or state.get("image_url"))
 
 def valid_binomial(s:str) -> bool:
-    parts = s.strip().split
-    if len(parts) != 2 return False
+    parts = s.strip().split()
+    if len(parts) != 2: return False
     g, e = parts
     return g[:1].isupper() and g[1:].islower() and e.islower()
