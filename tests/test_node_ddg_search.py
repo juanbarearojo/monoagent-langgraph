@@ -66,3 +66,10 @@ def test_merge_context_with_ddg(monkeypatch):
     assert "<WIKIPEDIA>" in ctx and "Japanese macaque" in ctx
     assert "<WEB_SNIPPETS>" in ctx and "IUCN Red List" in ctx
     assert out["_tmp.context_status"] == "ok"
+
+
+# --- Permite ejecutar este archivo directamente con Python ---
+if __name__ == "__main__":
+    import pytest, sys
+    # -q: salida concisa  |  -s: no capturar stdout (si añades prints)
+    sys.exit(pytest.main(["-q", "-s", __file__]))
