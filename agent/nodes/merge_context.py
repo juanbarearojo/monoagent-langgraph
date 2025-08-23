@@ -12,6 +12,7 @@ except Exception:
             return text
         return text[:max_chars].rsplit(" ", 1)[0] + "…"
 
+
 def _format_infobox(infobox: Dict[str, str], max_items: int = 12) -> str:
     if not infobox:
         return ""
@@ -23,6 +24,7 @@ def _format_infobox(infobox: Dict[str, str], max_items: int = 12) -> str:
         if count >= max_items:
             break
     return "\n".join(lines).strip()
+
 
 def _format_ddg(ddg: Dict[str, Any], max_results: int = 3) -> str:
     if not ddg or ddg.get("status") not in {"ok", "success"}:
@@ -41,11 +43,44 @@ def _format_ddg(ddg: Dict[str, Any], max_results: int = 3) -> str:
             parts.append(chunk)
     return "\n".join(parts).strip()
 
+
+def _collect_sources(wiki: Dict[str, Any], ddg: Dict[str, Any], max_sources: int = 10) -> List[str]:
+    """
+    Devuelve lista de URLs (Wikipedia + resultados DDG) sin duplicados, orden estable.
+    """
+    urls: List[str] = []
+
+    # Wikipedia
+    wurl = wiki.get("url")
+    if wurl:
+        urls.append(wurl)
+
+    # DDG (si existe)
+    results = (ddg or {}).get("results") or []
+    for r in results:
+        u = r.get("url") or r.get("link")
+        if u:
+            urls.append(u)
+
+    # Deduplicar preservando orden
+    seen = set()
+    uniq: List[str] = []
+    for u in urls:
+        if u in seen:
+            continue
+        seen.add(u)
+        uniq.append(u)
+        if len(uniq) >= max_sources:
+            break
+    return uniq
+
+
 def merge_context(state: Dict[str, Any]) -> Dict[str, Any]:
     """
     Une el contexto de Wikipedia (plain_text + infobox) y, si existe, snippets web (DDG).
     Guarda el resultado en state["_tmp.context"] como un único bloque listo para el LLM.
     Respeta state.get("context_max_chars", 8000) como límite de longitud.
+    Además, recopila fuentes en state["_tmp.sources"] (Wikipedia + DDG).
     """
     wiki = state.get("wiki") or {}
     ddg = state.get("_tmp.ddg") or state.get("ddg") or {}
@@ -76,7 +111,11 @@ def merge_context(state: Dict[str, Any]) -> Dict[str, Any]:
     max_chars = int(state.get("context_max_chars", 8000))
     context = _truncate(context, max_chars)
 
-    # Salida
+    # Salida principal
     state["_tmp.context"] = context
     state["_tmp.context_status"] = "ok" if context else "empty"
+
+    # Fuentes (Wikipedia + DDG)
+    state["_tmp.sources"] = _collect_sources(wiki, ddg)
+
     return state

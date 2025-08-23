@@ -28,3 +28,10 @@ def test_merge_context_basic():
     assert isinstance(srcs, list) and len(srcs) >= 1
     # Debe contener la URL de Wikipedia
     assert page.get("url") in srcs
+
+
+# --- Permite ejecutar este archivo directamente con Python ---
+if __name__ == "__main__":
+    import pytest, sys
+    # -q: salida concisa  |  -s: no capturar stdout (muestra prints)
+    sys.exit(pytest.main(["-q", "-s", __file__]))

@@ -32,8 +32,19 @@ def test_search_summary_with_net_mock(monkeypatch):
             {"title": "Macaca fuscata - ADW", "url": "https://animaldiversity.org/accounts/Macaca_fuscata/", "snippet": "Natural history..."},
         ]
 
-    monkeypatch.setattr(ddg, "_net_search", fake_net)
+    # Parchar la función interna del módulo
+    import types
+    ddg._net_search = types.FunctionType(fake_net.__code__, globals(), name="_net_search")  # type: ignore[attr-defined]
+
     out = ddg.search_summary("Macaca fuscata")
     assert out["status"] == "ok"
     assert len(out["results"]) == 2
     assert "IUCN" in out["top_snippet"] or "trusted" in out["top_snippet"]
+
+
+# --- Permite ejecutar este archivo directamente con Python ---
+if __name__ == "__main__":
+    import pytest
+    import sys
+    # -q: salida concisa, -s: no capturar stdout (por si añades prints)
+    sys.exit(pytest.main(["-q", "-s", __file__]))
