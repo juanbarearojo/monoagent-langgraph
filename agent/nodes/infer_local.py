@@ -18,6 +18,7 @@ except Exception:
 
 _LATIN_TO_LABEL: Dict[str, str] = {v: k for k, v in LABEL_TO_LATIN.items()}
 
+
 def _to_label(item: Dict[str, Any]) -> Optional[str]:
     """
     Acepta item top-k con 'label' o con 'latin'.
@@ -32,38 +33,56 @@ def _to_label(item: Dict[str, Any]) -> Optional[str]:
         return _LATIN_TO_LABEL.get(latin)
     return None
 
+
 def infer_local(state: Dict[str, Any]) -> Dict[str, Any]:
     """
     Ejecuta clasificador TorchScript y devuelve SOLO labels + métricas.
 
-    Entrada:
-      - state['image_bytes'] (bytes)
+    Entrada (state):
+      - image_bytes: bytes (requerido)
 
-    Salida (_tmp):
-      - _tmp.pred_label: str                (si disponible)
-      - _tmp.topk_list: [{"label": str, "prob": float}, ...]
-      - _tmp.p1, _tmp.p2, _tmp.margin, _tmp.entropy: float
-      - _tmp.need_fallback: True            (si no hay label utilizable)
-      - _tmp.error: str                     (si hay error)
+    Salida (mergea en state['_tmp']):
+      - p1, p2, margin, entropy: float
+      - topk_list: [{"label": str, "prob": float}, ...]
+      - preds: [(label: str, prob: float), ...]   # equivalente a topk_list pero en tupla
+      - pred_label: str                            # label del top-1 normalizado
+      - need_fallback: True                        # si no hay label utilizable
+      - error: str                                 # si hay error
     """
     img_bytes = state.get("image_bytes")
     if not img_bytes:
-        return {"_tmp.error": "no_image"}
+        # Devolver en _tmp anidado para coherencia
+        tmp = dict(state.get("_tmp", {}))
+        tmp["error"] = "no_image"
+        print("[infer_local] ERROR: no_image")
+        return {"_tmp": tmp}
 
     # Bytes -> PIL
     try:
         pil = Image.open(io.BytesIO(img_bytes)).convert("RGB")
     except Exception as e:
-        return {"_tmp.error": f"bad_image: {e}"}
+        tmp = dict(state.get("_tmp", {}))
+        tmp["error"] = f"bad_image: {e}"
+        print(f"[infer_local] ERROR: bad_image: {e}")
+        return {"_tmp": tmp}
 
     topk = int(state.get("topk", 5))
     try:
         result = _vision_infer(pil, topk=topk)  # <- llama a la TOOL real
     except Exception as e:
-        return {"_tmp.error": f"infer_failed: {e}"}
+        tmp = dict(state.get("_tmp", {}))
+        tmp["error"] = f"infer_failed: {e}"
+        print(f"[infer_local] ERROR: infer_failed: {e}")
+        return {"_tmp": tmp}
 
     raw_topk = result.get("topk") or []
     metrics = result.get("metrics") or {}
+
+    # DEBUG crudo
+    print("\n[infer_local] raw_topk:", raw_topk)
+    print("[infer_local] metrics:", metrics)
+
+    # Métricas tolerantes
     p1 = float(metrics.get("p1", 0.0))
     p2 = float(metrics.get("p2", 0.0))
     entropy = float(metrics.get("entropy", 0.0))
@@ -75,19 +94,31 @@ def infer_local(state: Dict[str, Any]) -> Dict[str, Any]:
         prob = float(it.get("prob", 0.0)) if isinstance(it, dict) else 0.0
         if label:
             norm_topk.append({"label": label, "prob": prob})
+        else:
+            print("[infer_local] Ignorado (no mapea a label):", it)
 
     pred_label: Optional[str] = norm_topk[0]["label"] if norm_topk else None
 
-    out: Dict[str, Any] = {
-        "_tmp.p1": p1,
-        "_tmp.p2": p2,
-        "_tmp.margin": p1 - p2,
-        "_tmp.entropy": entropy,
-        "_tmp.topk_list": norm_topk,
-    }
-    if pred_label:
-        out["_tmp.pred_label"] = pred_label
-    else:
-        out["_tmp.need_fallback"] = True
+    # Construir salida anidada coherente con el resto de nodos
+    tmp = dict(state.get("_tmp", {}))
+    tmp.update({
+        "p1": p1,
+        "p2": p2,
+        "margin": p1 - p2,
+        "entropy": entropy,
+        "topk_list": norm_topk,
+    })
 
-    return out
+    if pred_label:
+        tmp["pred_label"] = pred_label
+        # También generamos 'preds' para el gate (tupla equivalente)
+        tmp["preds"] = [(d["label"], float(d["prob"])) for d in norm_topk]
+    else:
+        tmp["need_fallback"] = True
+
+    # DEBUG final
+    print("[infer_local] norm_topk:", norm_topk)
+    print("[infer_local] pred_label:", pred_label)
+    print(f"[infer_local] p1={tmp['p1']:.6f} margin={tmp['margin']:.6f} entropy={tmp['entropy']:.6f}")
+
+    return {"_tmp": tmp}
