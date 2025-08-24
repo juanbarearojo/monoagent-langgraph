@@ -32,3 +32,14 @@ El usuario no proporcionó información suficiente (ej. falta imagen o especie a
 Formula una **pregunta de clarificación corta y amable** que ayude a continuar.
 Ejemplo: "¿Puedes subir una foto más clara de la especie?" 
 """
+# agent/prompts.py (añade estas constantes)
+PROMPT_NEED_IMAGE = (
+    "Para empezar necesito **una imagen del primate**. "
+    "Sube una foto (JPG/PNG) y haré la clasificación y el contexto."
+)
+
+PROMPT_NEED_IMAGE_WITH_TAXON = (
+    "He registrado el taxón que indicaste: **{taxon}**.\n\n"
+    "Para continuar necesito **una imagen del primate** (JPG/PNG). "
+    "La usaré para confirmar la especie y darte un contexto completo."
+)
