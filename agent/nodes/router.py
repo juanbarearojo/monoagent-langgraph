@@ -17,15 +17,6 @@ def _extract_user_binomial(text: Optional[str]) -> Optional[str]:
     return candidate if valid_binomial(candidate) else None
 
 def router_input(state: ChatVisionState) -> Dict[str, Any]:
-    """
-    Política:
-      - Imagen obligatoria para iniciar.
-      - Si force_route ∈ {"classify","qa","ask_image"} → se respeta.
-      - Si hay imagen → "classify"
-      - Si NO hay imagen → "ask_image"
-    Además:
-      - Detecta posible binomio del usuario en state['user_text'] y lo guarda en _tmp.user_binomial (validado).
-    """
     forced = state.get("force_route")  # type: ignore
     if forced in ("classify", "qa", "ask_image"):
         route = forced
@@ -39,4 +30,5 @@ def router_input(state: ChatVisionState) -> Dict[str, Any]:
     if user_binomial:
         tmp["user_binomial"] = user_binomial
 
+    # IMPORTANTÍSIMO: solo devolvemos _tmp. Nada más.
     return {"_tmp": tmp}

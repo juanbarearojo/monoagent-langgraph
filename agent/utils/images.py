@@ -2,11 +2,17 @@ import io
 import requests
 from PIL import Image
 
+import requests
+
 def download_to_bytes(url: str) -> bytes:
     """Descarga una imagen desde una URL y devuelve bytes."""
-    resp = requests.get(url, timeout=10)
+    headers = {
+        "User-Agent": "MonoAgentBot/0.1 (https://github.com/Barearojojuan/monoagent-langgraph; mailto:tu-email@example.com)"
+    }
+    resp = requests.get(url, headers=headers, timeout=10)
     resp.raise_for_status()
     return resp.content
+
 
 def image_to_bytes(pil_img, format: str = "PNG") -> bytes:
     """Convierte un objeto PIL.Image en bytes."""

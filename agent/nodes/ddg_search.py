@@ -5,7 +5,6 @@ from typing import Any, Dict
 try:
     from agent.tools.ddg import search_summary
 except Exception:
-    # Fallback defensivo en caso de import fallido durante early wiring
     def search_summary(latin: str, max_results: int = 5, timeout: float = 5.0) -> Dict[str, Any]:
         if not latin:
             return {"status": "empty", "top_snippet": "", "results": []}
@@ -20,27 +19,24 @@ except Exception:
 
 def retrieve_ddg(state: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Nodo: consulta DDG (vía tools.ddg.search_summary) y guarda salida en state.
-    Llaves:
-      - Entrada: state["_tmp.latin_name"] o state["current_taxon"]
-      - Salida principal para merge_context: state["_tmp.ddg"]
-      - Campos de compatibilidad: "_tmp.ddg_status", "_tmp.ddg_results", "_tmp.ddg_snippet"
+    Busca info en DDG y la deja en claves NO compartidas:
+      - 'ddg'       -> payload bruto
+      - 'ddg_meta'  -> status/snippet rápido (opcional)
+    Evita escribir en '_tmp' para no colisionar con otras ramas concurrentes.
     """
-    latin = state.get("_tmp.latin_name") or state.get("current_taxon")
+    latin = state.get("_tmp", {}).get("latin_name") or state.get("current_taxon")
     if not latin:
-        state["_tmp.ddg"] = {"status": "empty", "top_snippet": "", "results": []}
-        state["_tmp.ddg_status"] = "empty"
-        state["_tmp.ddg_results"] = []
-        state["_tmp.ddg_snippet"] = ""
-        return state
+        return {
+            "ddg": {"status": "empty", "top_snippet": "", "results": []},
+            "ddg_meta": {"status": "empty", "snippet": ""},
+        }
 
     ddg_payload = search_summary(latin)
-    # Salida primaria para merge_context
-    state["_tmp.ddg"] = ddg_payload
 
-    # Compatibilidad con posibles usos previos
-    state["_tmp.ddg_status"] = ddg_payload.get("status", "error")
-    state["_tmp.ddg_results"] = ddg_payload.get("results", [])
-    state["_tmp.ddg_snippet"] = ddg_payload.get("top_snippet", "")
-
-    return state
+    return {
+        "ddg": ddg_payload,
+        "ddg_meta": {
+            "status": ddg_payload.get("status", "error"),
+            "snippet": ddg_payload.get("top_snippet", ""),
+        },
+    }
