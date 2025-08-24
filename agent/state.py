@@ -17,6 +17,8 @@ class ChatVisionState(TypedDict, total=False):
     accept_policy: Literal["entropy", "confidence", "margin"]
     accept_threshold: float
     current_taxon: Optional[str]
+    wiki: Dict[str, Any]           # 👈 MUY IMPORTANTE (title, url, plain_text, infobox, status)
+
 
     # ⚠️ EPHEMERAL (debe existir para que LangGraph no lo “ignore”)
     _tmp: Dict[str, Any]

@@ -81,7 +81,7 @@ def ask_binomial(
 def ask_gpt_text(
     prompt: str,
     model: str = "gpt-4.1-mini",   # o gpt-4o-mini si prefieres
-    max_tokens: int = 512,
+    max_tokens: int = 1200,
     temperature: float = 0.2,
 ) -> Dict[str, Any]:
     """
