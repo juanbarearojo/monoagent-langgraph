@@ -74,3 +74,40 @@ def ask_binomial(
         return {"status": "invalid", "latin_name": "", "error": f"model_output='{text}'"}
 
     return {"status": "ok", "latin_name": text}
+
+
+# agent/tools/gpt.py (añade al final)
+
+def ask_gpt_text(
+    prompt: str,
+    model: str = "gpt-4.1-mini",   # o gpt-4o-mini si prefieres
+    max_tokens: int = 512,
+    temperature: float = 0.2,
+) -> Dict[str, Any]:
+    """
+    Llama a OpenAI Chat Completions con solo texto.
+    Devuelve: { 'answer': str, 'status': 'ok|error', 'error'?: str }
+    """
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        return {"status": "error", "answer": "", "error": "OPENAI_API_KEY missing"}
+
+    client = OpenAI(api_key=api_key)
+
+    try:
+        resp = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+    except Exception as e:
+        return {"status": "error", "answer": "", "error": str(e)}
+
+    try:
+        text = (resp.choices[0].message.content or "").strip()
+    except Exception as e:
+        return {"status": "error", "answer": "", "error": f"no_content: {e}"}
+
+    return {"status": "ok", "answer": text}
+
