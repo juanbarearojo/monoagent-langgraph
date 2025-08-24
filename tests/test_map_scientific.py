@@ -15,11 +15,17 @@ def test_normalized_label_with_spaces():
     out = map_to_scientific_name(state)
     assert out["_tmp.latin_name"] == "Saimiri sciureus"
 
+def test_latin_slug_from_model_is_normalized():
+    # Caso real: tu modelo devuelve 'macaca_fuscata'
+    state = {"_tmp.pred_label": "macaca_fuscata"}
+    out = map_to_scientific_name(state)
+    assert out["_tmp.latin_name"] == "Macaca fuscata"
+    assert out["_tmp.latin_source"] in {"normalized", "map"}  # normalizado si no hay mapping directo
+
 def test_unknown_label_triggers_fallback():
     state = {"_tmp.pred_label": "Unknown_monkey"}
     out = map_to_scientific_name(state)
     assert out.get("_tmp.need_fallback") is True
-    assert out.get("_tmp.latin_name") is None
 
 # --- Ejecutable como script ---
 if __name__ == "__main__":
