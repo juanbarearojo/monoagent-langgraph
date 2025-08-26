@@ -62,7 +62,8 @@ def ask_gpt41_vision(state: Dict[str, Any]) -> Dict[str, Any]:
             url=image_url,
             prompt=PROMPT_BINOMIAL,
             model=state.get("vision_model", "gpt-4.1-mini"),
-            max_output_tokens=int(state.get("vision_max_output_tokens", 16)),
+            # ❌ max_output_tokens=int(state.get("vision_max_output_tokens", 16)),
+            max_tokens=int(state.get("vision_max_output_tokens", 16)),  # ✅
         )
     except Exception:
         return {"_tmp": {"vision_status": "error"}}

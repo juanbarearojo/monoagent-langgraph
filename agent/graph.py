@@ -90,7 +90,9 @@ def build_graph():
 
     # visión → wiki (si ok) o aclarar
     def vision_next(state: ChatVisionState):
-        return "wiki" if state.get("_tmp", {}).get("vision_status") == "ok" else "clarify_or_fail"
+        latin = state.get("_tmp", {}).get("latin_name")
+        return "wiki" if latin else "clarify_or_fail"
+
 
     g.add_conditional_edges(
         "ask_gpt41_vision",
