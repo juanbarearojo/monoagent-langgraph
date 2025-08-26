@@ -149,7 +149,7 @@ with gr.Blocks(title="MonoAgent · Identificación + QA", fill_height=True, them
     with gr.Row():
         with gr.Column():
             # ✅ aquí el cambio importante
-            chat = gr.Chatbot(label="Preguntas sobre la especie", type="tuple", height=420)
+            chat = gr.Chatbot(label="Preguntas sobre la especie", type="tuples", height=420)
             user_box = gr.Textbox(placeholder="Escribe tu pregunta…", label="Tu pregunta")
             btn_ask = gr.Button("Enviar")
 
