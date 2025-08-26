@@ -1,5 +1,4 @@
 # agent/tools/wiki.py
-from __future__ import annotations
 from typing import Dict, List, Union
 import re
 import requests

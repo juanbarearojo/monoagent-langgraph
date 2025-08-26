@@ -1,5 +1,4 @@
 # agent/nodes/ask_gpt41_vision.py
-from __future__ import annotations
 from typing import Any, Dict
 
 try:

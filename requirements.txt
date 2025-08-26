@@ -2,3 +2,8 @@ torch
 torchvision
 pillow
 gradio
+langchain-core
+langgraph
+langchain-community
+requests
+beautifulsoup4

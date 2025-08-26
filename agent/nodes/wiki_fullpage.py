@@ -1,5 +1,4 @@
 # agent/nodes/wiki_fullpage.py
-from __future__ import annotations
 from typing import Any, Dict
 from agent.tools.wiki import fetch_fullpage
 
