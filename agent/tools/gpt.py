@@ -43,12 +43,9 @@ def ask_binomial(
 
     client = OpenAI(api_key=api_key)
 
-    # Prepara image_url (data URL si son bytes)
     image_url = url.strip() if (url and str(url).strip()) else _bytes_to_data_url(image_bytes)  # type: ignore[arg-type]
     prompt = prompt or PROMPT_BINOMIAL
 
-    # Chat Completions: contenido multimodal estable
-    # https://platform.openai.com/docs/guides/vision (estructura messages -> content list)
     try:
         resp = client.chat.completions.create(
             model=model,
@@ -75,8 +72,6 @@ def ask_binomial(
 
     return {"status": "ok", "latin_name": text}
 
-
-# agent/tools/gpt.py (añade al final)
 
 def ask_gpt_text(
     prompt: str,
@@ -110,4 +105,3 @@ def ask_gpt_text(
         return {"status": "error", "answer": "", "error": f"no_content: {e}"}
 
     return {"status": "ok", "answer": text}
-
