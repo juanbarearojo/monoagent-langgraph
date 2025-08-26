@@ -1,16 +1,27 @@
 # app.py
+from __future__ import annotations
 from typing import Any, Dict, List, Optional, Tuple
 
 import io
 import gradio as gr
 from langchain_core.messages import HumanMessage, AIMessage
-from agent.graph import build_graph                 # tu grafo determinista
-from agent.nodes.qa_about_taxon import qa_about_taxon as qa_node
 
+# ───────────────────────── Proyecto (ajusta rutas si difieren) ─────────────────
+try:
+    from agent.graph import build_graph                 # tu grafo determinista
+except Exception:
+    def build_graph():
+        raise NotImplementedError("Conecta tu build_graph() real desde agent.graph")
+
+try:
+    from agent.nodes.qa_about_taxon import qa_about_taxon as qa_node
+except Exception:
+    def qa_node(state: Dict[str, Any]) -> Dict[str, Any]:
+        msgs = list(state.get("messages", [])) + [AIMessage(content="[QA placeholder]")]
+        return {**state, "messages": msgs, "_tmp": {**state.get("_tmp", {}), "qa_answered": True}}
 
 # ───────────────────────── Helpers ─────────────────────────
 def normalize_id_output(state_out: Dict[str, Any]) -> Tuple[Optional[str], Dict[str, Any], Dict[str, Any]]:
-    """Extrae el taxón y empaqueta reporte+contexto (solo Wikipedia)."""
     latin = (
         (state_out.get("_tmp", {}) or {}).get("latin_name")
         or state_out.get("latin_name")
@@ -30,19 +41,17 @@ def normalize_id_output(state_out: Dict[str, Any]) -> Tuple[Optional[str], Dict[
     }
 
     extra_ctx = {
-        "wikipedia_fullpage": state_out.get("wikipedia_fullpage"),  # ← único contexto externo
-        "context_md": state_out.get("context_md"),                  # por si tu grafo ya lo genera
+        "wikipedia_fullpage": state_out.get("wikipedia_fullpage"),
+        "context_md": state_out.get("context_md"),
     }
     return latin, id_report, extra_ctx
 
 def build_context_md(extra_ctx: Dict[str, Any]) -> str:
-    """Compone el MD para QA usando SOLO Wikipedia."""
     if extra_ctx.get("context_md"):
         return str(extra_ctx["context_md"])
     wiki = extra_ctx.get("wikipedia_fullpage")
     if not wiki:
         return ""
-    # Si ya viene en texto plano, lo envolvemos en un bloque claro.
     return f"## Wikipedia (página completa)\n{wiki}"
 
 _graph = None
@@ -103,7 +112,7 @@ def do_chat(user_msg: str,
     state_in: Dict[str, Any] = {
         "messages": lc_hist,
         "current_taxon": current_taxon,
-        "context_md": build_context_md(extra_ctx),  # ← SOLO Wikipedia
+        "context_md": build_context_md(extra_ctx),
     }
 
     try:
@@ -139,15 +148,16 @@ with gr.Blocks(title="MonoAgent · Identificación + QA", fill_height=True, them
     gr.Markdown("---")
     with gr.Row():
         with gr.Column():
-            chat = gr.Chatbot(label="Preguntas sobre la especie", type="messages", height=420)
+            # ✅ aquí el cambio importante
+            chat = gr.Chatbot(label="Preguntas sobre la especie", type="tuple", height=420)
             user_box = gr.Textbox(placeholder="Escribe tu pregunta…", label="Tu pregunta")
             btn_ask = gr.Button("Enviar")
 
     # Estados
-    st_last_image = gr.State(None)  # bytes
-    st_extra_ctx = gr.State({})     # { wikipedia_fullpage, context_md? }
-    st_pairs = gr.State([])         # [(user, assistant)]
-    st_lc = gr.State([])            # LangChain messages
+    st_last_image = gr.State(None)
+    st_extra_ctx = gr.State({})
+    st_pairs = gr.State([])
+    st_lc = gr.State([])
 
     btn_identify.click(
         fn=do_identify,
