@@ -1,167 +1,186 @@
-import json
-import time
-from pathlib import Path
+# app.py
+from typing import Any, Dict, List, Optional, Tuple
 
+import io
 import gradio as gr
-import torch
-import torchvision.transforms as T
-from PIL import Image
+from langchain_core.messages import HumanMessage, AIMessage
+from agent.graph import build_graph                 # tu grafo determinista
+from agent.nodes.qa_about_taxon import qa_about_taxon as qa_node
 
-# ------------------ Rutas y carga de artefactos ------------------
-ROOT = Path(__file__).parent
-MODEL_DIR = ROOT / "model"
-MODEL_PATH = MODEL_DIR / "monkey_classifier_ts-v0.1.pt"
-LABELS_PATH = MODEL_DIR / "labels.json"
 
-assert MODEL_PATH.exists(), f"Modelo no encontrado: {MODEL_PATH}"
-assert LABELS_PATH.exists(), f"labels.json no encontrado: {LABELS_PATH}"
+# ───────────────────────── Helpers ─────────────────────────
+def normalize_id_output(state_out: Dict[str, Any]) -> Tuple[Optional[str], Dict[str, Any], Dict[str, Any]]:
+    """Extrae el taxón y empaqueta reporte+contexto (solo Wikipedia)."""
+    latin = (
+        (state_out.get("_tmp", {}) or {}).get("latin_name")
+        or state_out.get("latin_name")
+        or state_out.get("current_taxon")
+    )
+    topk = (state_out.get("_tmp", {}) or {}).get("topk") or state_out.get("topk") or []
+    entropy = (state_out.get("_tmp", {}) or {}).get("entropy") or state_out.get("entropy")
+    pred_label = (state_out.get("_tmp", {}) or {}).get("pred_label") or state_out.get("pred_label")
+    source = (state_out.get("_tmp", {}) or {}).get("latin_source") or state_out.get("latin_source")
 
-# Cargar modelo TorchScript (CPU)
-model = torch.jit.load(str(MODEL_PATH), map_location="cpu").eval()
-
-# Cargar metadatos / labels
-with open(LABELS_PATH, "r", encoding="utf-8") as f:
-    meta = json.load(f)
-
-# Soporta ambos formatos: id2label o lista "classes"
-if "id2label" in meta:
-    id2label = {int(k): v for k, v in meta["id2label"].items()}
-    classes = [id2label[i] for i in range(len(id2label))]
-elif "classes" in meta:
-    classes = meta["classes"]
-    id2label = {i: classes[i] for i in range(len(classes))}
-else:
-    raise ValueError("labels.json debe contener 'id2label' o 'classes'")
-
-mean = meta.get("normalize", {}).get("mean", [0.4363, 0.4328, 0.3291])
-std  = meta.get("normalize", {}).get("std",  [0.2129, 0.2075, 0.2038])
-input_size = meta.get("input_size", [1, 3, 224, 224])
-image_hw = tuple(input_size[2:4])  # [H, W]
-NUM_CLASSES = len(classes)
-
-transform = T.Compose([
-    T.Resize(image_hw),
-    T.ToTensor(),
-    T.Normalize(torch.tensor(mean), torch.tensor(std))
-])
-
-# ------------------ Utilidades ------------------
-def softmax_logits(logits: torch.Tensor) -> torch.Tensor:
-    """Garantiza softmax sobre dimensión de clases y devuelve [C]."""
-    if logits.dim() == 2:  # [1, C]
-        probs = torch.softmax(logits, dim=1).squeeze(0)
-    else:  # [C]
-        probs = torch.softmax(logits, dim=0)
-    return probs
-
-def make_summary_md(result: dict) -> str:
-    """Resumen en Markdown legible."""
-    pred = result["prediction"]
-    tm = result["timing_ms"]
-    ts = result["tensor_stats"]
-    topk = result["topk"]
-
-    lines = []
-    lines.append("### Resumen de inferencia")
-    lines.append(f"- **Predicción (top-1):** `{pred['label']}`  — confianza: **{pred['confidence']:.4f}**")
-    lines.append(f"- **Entropía:** {result['entropy']:.4f}")
-    lines.append(f"- **Imagen:** {result['image_size']['width']}×{result['image_size']['height']} px")
-    lines.append(f"- **Tensor:** min={ts['min']:.4f} · max={ts['max']:.4f} · mean={ts['mean']:.4f} · std={ts['std']:.4f}")
-    lines.append(f"- **Tiempos (ms):** preprocess={tm['preprocess']:.2f} · inference={tm['inference']:.2f} · total={tm['total']:.2f}")
-    lines.append("")
-    lines.append("**Top-k:**")
-    for i, item in enumerate(topk, 1):
-        lines.append(f"{i:>2}. `{item['label']}` — {item['prob']:.4f}")
-    return "\n".join(lines)
-
-# ------------------ Inferencia ------------------
-@torch.inference_mode()
-def infer(image: Image.Image, topk: int = 5):
-    """
-    Devuelve:
-      1) Label (Gradio): dict top-k {label: prob}
-      2) JSON con toda la info: predicción, top-k, probs y logits completos, entropía, tiempos, stats
-      3) Markdown con resumen formateado
-    """
-    t0 = time.perf_counter()
-
-    # Preprocesado
-    img = image.convert("RGB")
-    orig_w, orig_h = img.size
-    x = transform(img).unsqueeze(0)  # [1, C, H, W]
-    x_min, x_max = float(x.min().item()), float(x.max().item())
-    x_mean = float(x.mean().item())
-    x_std = float(x.std().item())
-
-    t1 = time.perf_counter()
-    logits = model(x)
-    t2 = time.perf_counter()
-
-    # Probabilidades
-    probs = softmax_logits(logits)  # [C]
-
-    # Top-k
-    k = min(int(topk), NUM_CLASSES)
-    vals, idxs = torch.topk(probs, k=k)
-    topk_labels = [classes[int(i)] for i in idxs.tolist()]
-    topk_scores = [float(v) for v in vals.tolist()]
-    topk_label_dict = {lbl: sc for lbl, sc in zip(topk_labels, topk_scores)}
-
-    # Top-1
-    top1_idx = int(torch.argmax(probs).item())
-    top1_label = classes[top1_idx]
-    top1_conf = float(probs[top1_idx].item())
-
-    # Entropía (base e)
-    eps = 1e-12
-    entropy = -float((probs * (probs + eps).log()).sum().item())
-
-    # Logits/Probs completos (en diccionario por claridad)
-    if logits.dim() == 2:
-        logits_list = logits.squeeze(0).tolist()
-    else:
-        logits_list = logits.tolist()
-
-    result = {
-        "image_size": {"width": orig_w, "height": orig_h},
-        "tensor_stats": {"min": x_min, "max": x_max, "mean": x_mean, "std": x_std},
-        "prediction": {"label": top1_label, "index": top1_idx, "confidence": top1_conf},
-        "topk": [{"label": l, "prob": s} for l, s in zip(topk_labels, topk_scores)],
-        "probs": {classes[i]: float(probs[i].item()) for i in range(NUM_CLASSES)},
-        "logits": {classes[i]: float(logits_list[i]) for i in range(NUM_CLASSES)},
+    id_report = {
+        "pred_label": pred_label,
+        "latin_name": latin,
+        "topk": topk,
         "entropy": entropy,
-        "timing_ms": {
-            "preprocess": (t1 - t0) * 1000.0,
-            "inference":  (t2 - t1) * 1000.0,
-            "total":      (t2 - t0) * 1000.0
-        }
+        "source": source,
     }
 
-    summary_md = make_summary_md(result)
-    return topk_label_dict, result, summary_md
+    extra_ctx = {
+        "wikipedia_fullpage": state_out.get("wikipedia_fullpage"),  # ← único contexto externo
+        "context_md": state_out.get("context_md"),                  # por si tu grafo ya lo genera
+    }
+    return latin, id_report, extra_ctx
 
-# ------------------ UI ------------------
-title = "Monkey Classifier 🐒 — Info detallada (sin gráficas)"
-description = (
-    "Sube una imagen. Se muestra Top-k, predicción top-1, entropía, "
-    "distribución completa de probabilidades y logits, además de tiempos y stats del tensor."
-)
+def build_context_md(extra_ctx: Dict[str, Any]) -> str:
+    """Compone el MD para QA usando SOLO Wikipedia."""
+    if extra_ctx.get("context_md"):
+        return str(extra_ctx["context_md"])
+    wiki = extra_ctx.get("wikipedia_fullpage")
+    if not wiki:
+        return ""
+    # Si ya viene en texto plano, lo envolvemos en un bloque claro.
+    return f"## Wikipedia (página completa)\n{wiki}"
 
-demo = gr.Interface(
-    fn=infer,
-    inputs=[
-        gr.Image(type="pil", label="Imagen"),
-        gr.Slider(1, 10, value=5, step=1, label="Top-k"),
-    ],
-    outputs=[
-        gr.Label(num_top_classes=5, label="Top-k (Label)"),
-        gr.JSON(label="Detalles (JSON)"),
-        gr.Markdown(label="Resumen"),
-    ],
-    title=title,
-    description=description,
-    allow_flagging="never",
-)
+_graph = None
+def get_graph():
+    global _graph
+    if _graph is None:
+        _graph = build_graph()
+    return _graph
+
+# ───────────────────────── Callbacks ─────────────────────────
+def do_identify(image) -> Tuple[str, Dict[str, Any], List[tuple], bytes, Dict[str, Any], List[Any]]:
+    if image is None:
+        return "(Sube una imagen)", {}, [], None, {}, []
+
+    buf = io.BytesIO()
+    image.save(buf, format="PNG")
+    img_bytes = buf.getvalue()
+
+    state_in: Dict[str, Any] = {"messages": [], "image_bytes": img_bytes}
+    state_out = get_graph().invoke(state_in)
+
+    latin, id_report, extra_ctx = normalize_id_output(state_out)
+
+    if not latin:
+        return "No identificado (repite o sube otra imagen)", {}, [], img_bytes, extra_ctx, []
+
+    chat_pairs = [(None, f"Identificado: **{latin}**. Pregunta sobre hábitat, dieta, distribución, conservación…")]
+    lc_messages: List[Any] = [AIMessage(content=f"Especie identificada: {latin}. ¿En qué puedo ayudarte?")]
+    return latin, id_report, chat_pairs, img_bytes, extra_ctx, lc_messages
+
+def redo_identify(last_image: Optional[bytes]) -> Tuple[str, Dict[str, Any], List[tuple], bytes, Dict[str, Any], List[Any]]:
+    if not last_image:
+        return "(Sube una imagen)", {}, [], None, {}, []
+    state_in = {"messages": [], "image_bytes": last_image}
+    state_out = get_graph().invoke(state_in)
+    latin, id_report, extra_ctx = normalize_id_output(state_out)
+    if not latin:
+        return "No identificado (repite o sube otra imagen)", {}, [], last_image, extra_ctx, []
+    chat_pairs = [(None, f"Identificado: **{latin}**. ¡Pregunta lo que quieras!")]
+    lc_messages = [AIMessage(content=f"Especie identificada: {latin}. ¿En qué puedo ayudarte?")]
+    return latin, id_report, chat_pairs, last_image, extra_ctx, lc_messages
+
+def do_chat(user_msg: str,
+            current_taxon: str,
+            chat_pairs: List[tuple],
+            id_report: Dict[str, Any],
+            extra_ctx: Dict[str, Any],
+            lc_messages: List[Any]) -> Tuple[List[tuple], str, List[Any]]:
+    user_msg = (user_msg or "").strip()
+    if not user_msg:
+        return chat_pairs, "", lc_messages
+
+    if not current_taxon or current_taxon.startswith("(") or current_taxon.startswith("No identificado"):
+        tip = "Primero identifica una especie: sube imagen y pulsa **Identificar**."
+        return chat_pairs + [(user_msg, tip)], "", lc_messages
+
+    lc_hist = list(lc_messages) + [HumanMessage(content=user_msg)]
+    state_in: Dict[str, Any] = {
+        "messages": lc_hist,
+        "current_taxon": current_taxon,
+        "context_md": build_context_md(extra_ctx),  # ← SOLO Wikipedia
+    }
+
+    try:
+        state_out = qa_node(state_in)
+    except Exception as e:
+        answer = f"Ocurrió un error en QA: {type(e).__name__}: {e}"
+        return chat_pairs + [(user_msg, answer)], "", lc_hist
+
+    out_msgs = state_out.get("messages", [])
+    last_ai = next((m for m in reversed(out_msgs) if isinstance(m, AIMessage)), None)
+    answer = last_ai.content if last_ai else "(QA no devolvió respuesta)"
+
+    new_pairs = chat_pairs + [(user_msg, answer)]
+    return new_pairs, "", out_msgs
+
+def reset_all():
+    return "(Sube una imagen)", {}, [], None, {}, [], ""
+
+# ───────────────────────── UI (Gradio) ─────────────────────────
+with gr.Blocks(title="MonoAgent · Identificación + QA", fill_height=True, theme=gr.themes.Soft()) as demo:
+    gr.Markdown("# 🐒 MonoAgent — Identificación (grafo) + QA (Wikipedia)")
+
+    with gr.Row():
+        with gr.Column(scale=1):
+            image_in = gr.Image(label="Sube una imagen del animal", type="pil")
+            btn_identify = gr.Button("🔍 Identificar", variant="primary")
+            btn_reidentify = gr.Button("↻ Re-identificar")
+            btn_reset = gr.Button("🧹 Reiniciar")
+        with gr.Column(scale=1):
+            current_taxon = gr.Label(value="(Sube una imagen)", label="Especie identificada")
+            id_report = gr.JSON(label="Detalle de predicción")
+
+    gr.Markdown("---")
+    with gr.Row():
+        with gr.Column():
+            chat = gr.Chatbot(label="Preguntas sobre la especie", type="messages", height=420)
+            user_box = gr.Textbox(placeholder="Escribe tu pregunta…", label="Tu pregunta")
+            btn_ask = gr.Button("Enviar")
+
+    # Estados
+    st_last_image = gr.State(None)  # bytes
+    st_extra_ctx = gr.State({})     # { wikipedia_fullpage, context_md? }
+    st_pairs = gr.State([])         # [(user, assistant)]
+    st_lc = gr.State([])            # LangChain messages
+
+    btn_identify.click(
+        fn=do_identify,
+        inputs=[image_in],
+        outputs=[current_taxon, id_report, st_pairs, st_last_image, st_extra_ctx, st_lc],
+        show_progress="minimal",
+    ).then(lambda p: p, inputs=[st_pairs], outputs=[chat])
+
+    btn_reidentify.click(
+        fn=redo_identify,
+        inputs=[st_last_image],
+        outputs=[current_taxon, id_report, st_pairs, st_last_image, st_extra_ctx, st_lc],
+        show_progress="minimal",
+    ).then(lambda p: p, inputs=[st_pairs], outputs=[chat])
+
+    btn_ask.click(
+        fn=do_chat,
+        inputs=[user_box, current_taxon, st_pairs, id_report, st_extra_ctx, st_lc],
+        outputs=[st_pairs, user_box, st_lc],
+        show_progress="minimal",
+    ).then(lambda p: p, inputs=[st_pairs], outputs=[chat])
+
+    user_box.submit(
+        fn=do_chat,
+        inputs=[user_box, current_taxon, st_pairs, id_report, st_extra_ctx, st_lc],
+        outputs=[st_pairs, user_box, st_lc],
+    ).then(lambda p: p, inputs=[st_pairs], outputs=[chat])
+
+    btn_reset.click(
+        fn=reset_all,
+        inputs=[],
+        outputs=[current_taxon, id_report, st_pairs, st_last_image, st_extra_ctx, st_lc, user_box],
+    ).then(lambda p: p, inputs=[st_pairs], outputs=[chat])
 
 if __name__ == "__main__":
     demo.launch()
