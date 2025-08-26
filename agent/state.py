@@ -1,5 +1,4 @@
 # agent/state.py
-from __future__ import annotations
 from typing import TypedDict, Annotated, Optional, Sequence, Literal, Any, Dict
 from langgraph.graph.message import add_messages
 from langchain_core.messages import AnyMessage

@@ -1,5 +1,4 @@
 # agent/graph.py
-from __future__ import annotations
 from typing import Dict, Any
 from langgraph.graph import StateGraph, START, END  # type: ignore
 
