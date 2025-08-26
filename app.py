@@ -1,6 +1,7 @@
 # app.py
+from __future__ import annotations
 from typing import Any, Dict, List, Optional, Tuple
-import io, os, uuid
+import io, os
 
 import gradio as gr
 from langchain_core.messages import HumanMessage, AIMessage, BaseMessage
@@ -19,26 +20,21 @@ except Exception:
         msgs = list(state.get("messages", [])) + [AIMessage(content="[QA placeholder]")]
         return {**state, "messages": msgs, "_tmp": {**state.get("_tmp", {}), "qa_answered": True}}
 
-# ───────────────────────── Langfuse (opcional) ─────────────────────────
-def get_callbacks():
+# ───────────────────────── Langfuse (exacto como tu notebook) ─────────────────
+def get_langfuse_handler():
     """
-    Devuelve callbacks para Langfuse si está instalado y con credenciales.
-    Si no, devuelve [] y no rompe.
+    Intenta crear CallbackHandler() de langfuse.langchain.
+    Si no está instalado o faltan claves válidas, devuelve None sin romper.
     """
     try:
-        from langfuse.callback import CallbackHandler as LangfuseCallbackHandler  # type: ignore
-        if os.getenv("LANGFUSE_PUBLIC_KEY") and os.getenv("LANGFUSE_SECRET_KEY"):
-            return [LangfuseCallbackHandler(
-                public_key=os.getenv("LANGFUSE_PUBLIC_KEY"),
-                secret_key=os.getenv("LANGFUSE_SECRET_KEY"),
-                host=os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com"),
-            )]
+        # MISMO IMPORT QUE EN TU NOTEBOOK
+        from langfuse.langchain import CallbackHandler as LangfuseHandler  # type: ignore
+        # en tu ejemplo: handler = CallbackHandler()  (sin argumentos)
+        handler = LangfuseHandler()
+        # si faltan claves, la lib puede loggear warning pero no queremos romper
+        return handler
     except Exception:
-        pass
-    return []
-
-def make_thread_id(prefix: str = "session") -> str:
-    return f"{prefix}-{uuid.uuid4().hex[:8]}"
+        return None
 
 # ───────────────────────── Helpers ─────────────────────────
 def normalize_id_output(state_out: Dict[str, Any]) -> Tuple[Optional[str], Dict[str, Any], Dict[str, Any]]:
@@ -75,7 +71,6 @@ def build_context_md(extra_ctx: Dict[str, Any]) -> str:
     return f"## Wikipedia (página completa)\n{wiki}"
 
 def lc_to_ui_messages(msgs: List[BaseMessage]) -> List[Dict[str, str]]:
-    """LangChain → Chatbot(type='messages')."""
     out = []
     for m in msgs:
         role = "assistant" if isinstance(m, AIMessage) else "user"
@@ -94,21 +89,21 @@ def get_graph():
 def do_identify(image) -> Tuple[str, Dict[str, Any], List[Dict[str, str]], bytes, Dict[str, Any], List[Any], str]:
     """Ejecuta el grafo (bloqueante), pinta el mensaje de finalize y devuelve estado de chat."""
     if image is None:
-        return "(Sube una imagen)", {}, [], None, {}, [], make_thread_id("noimg")
+        return "(Sube una imagen)", {}, [], None, {}, [], "test1"
 
     # PIL → bytes
     buf = io.BytesIO()
     image.save(buf, format="PNG")
     img_bytes = buf.getvalue()
 
-    # Entrada mínima para el grafo
     state_in: Dict[str, Any] = {"messages": [], "image_bytes": img_bytes}
 
-    # Langfuse + thread_id
-    callbacks = get_callbacks()
-    thread_id = make_thread_id("identify")
+    # Langfuse handler (como tu notebook)
+    handler = get_langfuse_handler()
+    callbacks = [handler] if handler else []
+    thread_id = "test1"  # EXACTO como pides
 
-    # INVOKE BLOQUEANTE
+    # INVOKE BLOQUEANTE con callbacks y thread_id fijo
     state_out = get_graph().invoke(
         state_in,
         config={"callbacks": callbacks, "configurable": {"thread_id": thread_id}},
@@ -136,11 +131,13 @@ def do_identify(image) -> Tuple[str, Dict[str, Any], List[Dict[str, str]], bytes
 
 def redo_identify(last_image: Optional[bytes], prev_thread_id: str) -> Tuple[str, Dict[str, Any], List[Dict[str, str]], bytes, Dict[str, Any], List[Any], str]:
     if not last_image:
-        return "(Sube una imagen)", {}, [], None, {}, [], make_thread_id("noimg")
+        return "(Sube una imagen)", {}, [], None, {}, [], "test1"
 
     state_in = {"messages": [], "image_bytes": last_image}
-    callbacks = get_callbacks()
-    thread_id = prev_thread_id or make_thread_id("identify")
+
+    handler = get_langfuse_handler()
+    callbacks = [handler] if handler else []
+    thread_id = "test1"  # fijo
 
     state_out = get_graph().invoke(
         state_in,
@@ -176,7 +173,7 @@ def do_chat(user_msg: str,
     """
     - Añade HumanMessage al historial LC.
     - Llama a QA (bloqueante) con context_md (Wikipedia).
-    - Si el QA falla o no hay API key, responde amable sin colgarse.
+    - Si falta OPENAI_API_KEY, responde amable sin colgarse.
     """
     user_msg = (user_msg or "").strip()
     if not user_msg:
@@ -187,7 +184,6 @@ def do_chat(user_msg: str,
         return ui_messages + [{"role": "user", "content": user_msg},
                               {"role": "assistant", "content": tip}], "", lc_messages
 
-    # Guard explícito: sin OPENAI_API_KEY → no intentamos QA remoto
     if not os.getenv("OPENAI_API_KEY"):
         msg = ("QA deshabilitado: falta `OPENAI_API_KEY` en el entorno.\n"
                "Ve a *Settings → Secrets* y añade tu clave para habilitar preguntas.")
@@ -197,17 +193,15 @@ def do_chat(user_msg: str,
         ]
         return new_ui, "", lc_messages
 
-    # Historial LC → + humano
     lc_hist = list(lc_messages) + [HumanMessage(content=user_msg)]
-
-    # Estado para el nodo QA
     state_in: Dict[str, Any] = {
         "messages": lc_hist,
         "current_taxon": current_taxon,
         "context_md": build_context_md(extra_ctx),
     }
 
-    # Llamada bloqueante al nodo QA
+    # El QA no usa Langfuse aquí (es un nodo aparte). Si quieres trazar también,
+    # puedes adaptarlo dentro del nodo usando langfuse.langchain.
     try:
         state_out = qa_node(state_in)
     except Exception as e:
@@ -215,12 +209,10 @@ def do_chat(user_msg: str,
         return ui_messages + [{"role": "user", "content": user_msg},
                               {"role": "assistant", "content": answer}], "", lc_hist
 
-    # Extraer última AIMessage
     out_msgs = state_out.get("messages", [])
     last_ai = next((m for m in reversed(out_msgs) if isinstance(m, AIMessage)), None)
     answer = (last_ai.content if last_ai else "").strip()
 
-    # Si llegó vacío (p.ej. ask_gpt_text devolvió status=error y tu nodo no lo manejó)
     if not answer:
         friendly = "No he podido generar respuesta de QA ahora mismo. ¿Tienes configurada la variable `OPENAI_API_KEY`?"
         new_ui = ui_messages + [
@@ -233,10 +225,10 @@ def do_chat(user_msg: str,
         {"role": "user", "content": user_msg},
         {"role": "assistant", "content": answer},
     ]
-    return new_ui, "", out_msgs  # limpiamos textbox; devolvemos historial LC completo
+    return new_ui, "", out_msgs
 
 def reset_all():
-    return "(Sube una imagen)", {}, [], None, {}, [], "",
+    return "(Sube una imagen)", {}, [], None, {}, [], "test1",
 
 # ───────────────────────── UI (Gradio) ─────────────────────────
 with gr.Blocks(title="MonoAgent · Identificación + QA", fill_height=True, theme=gr.themes.Soft()) as demo:
@@ -260,11 +252,11 @@ with gr.Blocks(title="MonoAgent · Identificación + QA", fill_height=True, them
             btn_ask = gr.Button("Enviar")
 
     # Estados
-    st_last_image = gr.State(None)      # bytes
-    st_extra_ctx = gr.State({})         # wiki/context_md
-    st_chat_msgs = gr.State([])         # mensajes UI [{role, content}, ...]
-    st_lc = gr.State([])                # LangChain messages [Human/AI...]
-    st_thread = gr.State("")            # thread_id (Langfuse/configurable)
+    st_last_image = gr.State(None)
+    st_extra_ctx = gr.State({})
+    st_chat_msgs = gr.State([])
+    st_lc = gr.State([])
+    st_thread = gr.State("test1")  # mantenemos el thread_id fijo
 
     # Identificar
     btn_identify.click(

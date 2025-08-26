@@ -8,3 +8,4 @@ langchain-community
 requests
 beautifulsoup4
 openai
+langfuse
