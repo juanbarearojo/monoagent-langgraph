@@ -7,3 +7,4 @@ langgraph
 langchain-community
 requests
 beautifulsoup4
+openai
