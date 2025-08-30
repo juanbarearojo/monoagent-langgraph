@@ -13,9 +13,6 @@ from agent.nodes.qa_about_taxon import qa_about_taxon as qa_node
 # ⛔️ NOTA: en producción, mejor mover estas claves a Secrets/ENV.
 from langfuse.langchain import CallbackHandler  # si no está instalado, fallará aquí (bien para depurar)
 
-os.environ["LANGFUSE_PUBLIC_KEY"] = "pk-lf-d0b9900c-5be4-4dd6-a7e1-93a3bf4b132c"
-os.environ["LANGFUSE_SECRET_KEY"] = "sk-lf-4a92f9c3-1f53-475f-9855-f2a6d0178079"
-os.environ["LANGFUSE_HOST"]       = "https://cloud.langfuse.com"
 
 # valida presencia explícita
 _missing = [k for k in ("LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY", "LANGFUSE_HOST") if not os.getenv(k)]
