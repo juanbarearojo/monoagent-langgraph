@@ -6,16 +6,17 @@ import gradio as gr
 from langchain_core.messages import HumanMessage, AIMessage
 
 # ───────────────────────── Project imports ─────────────────────────
-from agent.graph import build_graph
+from agent.graph import build_graph                          # deterministic graph
 from agent.nodes.qa_about_taxon import qa_about_taxon as qa_node
 
 # ───────────────────────── Langfuse (strict, no try/except) ───────
-from langfuse.langchain import CallbackHandler
+# ⛔️ NOTE: In production, keep these in Secrets/ENV.
+from langfuse.langchain import CallbackHandler  # will fail if not installed (good for debugging)
 
 _missing = [k for k in ("LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY", "LANGFUSE_HOST") if not os.getenv(k)]
 if _missing:
     raise RuntimeError(f"[Langfuse] Missing environment variables: {_missing}")
-handler = CallbackHandler()
+handler = CallbackHandler()  # if keys are invalid, you will see the error in logs
 
 # ───────────────────────── Helpers ─────────────────────────
 def normalize_id_output(state_out: Dict[str, Any]) -> Tuple[Optional[str], Dict[str, Any], Dict[str, Any]]:
@@ -44,6 +45,7 @@ def build_context_md(extra_ctx: Dict[str, Any]) -> str:
         return f"## Wikipedia\n{extra_ctx['wikipedia_fullpage']}"
     return ""
 
+# Lazy graph singleton
 _graph = None
 def get_graph():
     global _graph
@@ -53,19 +55,24 @@ def get_graph():
 
 # ───────────────────────── Callbacks ─────────────────────────
 def do_identify(image):
+    """Identify species from uploaded PIL image."""
     if image is None:
         return ("(Upload an image)", {}, [], None, {}, [], "test1")
 
+    # convert PIL -> bytes for the graph
     buf = io.BytesIO(); image.save(buf, format="PNG")
     img_bytes = buf.getvalue()
 
     state_in = {"messages": [], "image_bytes": img_bytes}
+
+    # Langfuse EXACT as requested (handler created above, fixed thread_id)
     state_out = get_graph().invoke(
         state_in,
         config={"callbacks": [handler], "configurable": {"thread_id": "test1"}},
     )
 
     latin, id_report, extra_ctx = normalize_id_output(state_out)
+    # Use the last AI message (finalize) if present
     finalize_ai = next((m for m in reversed(state_out.get("messages", [])) if isinstance(m, AIMessage)), None)
 
     if not latin:
@@ -73,20 +80,22 @@ def do_identify(image):
             "Not identified",
             id_report,
             [{"role": "assistant", "content": "Identification failed. Please upload another image and click **Identify**."}],
-            img_bytes,
+            img_bytes,  # keep bytes in hidden state (NOT in any gr.Image output)
             extra_ctx,
             state_out.get("messages", []),
             "test1",
         )
 
     first_msg = finalize_ai.content if finalize_ai else f"Identified: **{latin}**."
-    return latin, id_report, [{"role": "assistant", "content": first_msg}], img_bytes, extra_ctx, state_out.get("messages", []), "test1"
+    ui_msgs = [{"role": "assistant", "content": first_msg}]
+    return latin, id_report, ui_msgs, img_bytes, extra_ctx, state_out.get("messages", []), "test1"
 
-def redo_identify(last_image, prev_thread_id):
-    if not last_image:
+def redo_identify(last_image_bytes, prev_thread_id):
+    """Re-run identification using the last stored image bytes (hidden state)."""
+    if not last_image_bytes:
         return ("(Upload an image)", {}, [], None, {}, [], "test1")
 
-    state_in = {"messages": [], "image_bytes": last_image}
+    state_in = {"messages": [], "image_bytes": last_image_bytes}
     state_out = get_graph().invoke(
         state_in,
         config={"callbacks": [handler], "configurable": {"thread_id": "test1"}},
@@ -99,16 +108,17 @@ def redo_identify(last_image, prev_thread_id):
             "Not identified",
             id_report,
             [{"role": "assistant", "content": "Identification failed. Try a different image."}],
-            last_image,
+            last_image_bytes,   # keep as hidden state
             extra_ctx,
             state_out.get("messages", []),
             "test1",
         )
 
     first_msg = finalize_ai.content if finalize_ai else f"Identified: **{latin}**."
-    return latin, id_report, [{"role": "assistant", "content": first_msg}], last_image, extra_ctx, state_out.get("messages", []), "test1"
+    return latin, id_report, [{"role": "assistant", "content": first_msg}], last_image_bytes, extra_ctx, state_out.get("messages", []), "test1"
 
 def do_chat(user_msg, current_taxon, ui_messages, id_report, extra_ctx, lc_messages, thread_id):
+    """Context-aware Q&A about the identified species."""
     user_msg = (user_msg or "").strip()
     if not user_msg:
         return ui_messages, "", lc_messages
@@ -118,8 +128,9 @@ def do_chat(user_msg, current_taxon, ui_messages, id_report, extra_ctx, lc_messa
             {"role": "assistant", "content": "Please identify a species first."}
         ], "", lc_messages
 
+    # Guard: if no OpenAI key → do not hang
     if not os.getenv("OPENAI_API_KEY"):
-        msg = "Q&A disabled: missing `OPENAI_API_KEY`."
+        msg = "Q&A disabled: missing `OPENAI_API_KEY` in the environment."
         return ui_messages + [
             {"role": "user", "content": user_msg},
             {"role": "assistant", "content": msg}
@@ -137,7 +148,7 @@ def do_chat(user_msg, current_taxon, ui_messages, id_report, extra_ctx, lc_messa
         ], "", lc_hist
 
     last_ai = next((m for m in reversed(state_out.get("messages", [])) if isinstance(m, AIMessage)), None)
-    answer = (last_ai.content if last_ai else "").strip() or "I couldn’t generate a response."
+    answer = (last_ai.content if last_ai else "").strip() or "I couldn’t generate a Q&A response right now."
     new_ui = ui_messages + [
         {"role": "user", "content": user_msg},
         {"role": "assistant", "content": answer},
@@ -145,6 +156,7 @@ def do_chat(user_msg, current_taxon, ui_messages, id_report, extra_ctx, lc_messa
     return new_ui, "", state_out.get("messages", [])
 
 def reset_all():
+    """Reset all UI and hidden state."""
     return "(Upload an image)", {}, [], None, {}, [], "test1"
 
 # ───────────────────────── UI (Gradio) ─────────────────────────
@@ -158,6 +170,7 @@ CUSTOM_CSS = """
 """
 
 with gr.Blocks(title="MonoAgent · Primate ID + Q&A", theme=theme, css=CUSTOM_CSS) as demo:
+    # Header
     gr.Markdown(
         """
 <div class="app-header">
@@ -169,10 +182,12 @@ with gr.Blocks(title="MonoAgent · Primate ID + Q&A", theme=theme, css=CUSTOM_CS
 Upload a primate photo, identify the species, and ask questions with context-aware Q&A.
 </p>
 <hr style="margin-top:.8rem"/>
-        """
+        """,
+        elem_id="header-md"
     )
 
     with gr.Row():
+        # LEFT: Inputs & Actions
         with gr.Column(scale=5, min_width=320):
             image_in = gr.Image(label="Upload image", type="pil", height=320)
             with gr.Row():
@@ -183,27 +198,46 @@ Upload a primate photo, identify the species, and ask questions with context-awa
             with gr.Accordion("Prediction details", open=False):
                 id_report = gr.JSON(label="Model output (debug)")
 
+        # RIGHT: Results & Chat
         with gr.Column(scale=7, min_width=420):
             with gr.Group(elem_classes="kpi-card"):
                 current_taxon = gr.Label(value="(Upload an image)", label="Identified species")
+                gr.Markdown(
+                    """
+<div style="font-size:.9rem; color:#475569">
+Tip: good, well-lit frontal images (no heavy occlusions) yield better results.
+</div>
+                    """,
+                )
 
-            chat = gr.Chatbot(label="Ask about the species", type="messages", height=420)
-            user_box = gr.Textbox(placeholder="Ask about this species (diet, range...)", label="Your question")
+            chat = gr.Chatbot(
+                label="Ask about the species",
+                type="messages",
+                height=420,
+            )
+            user_box = gr.Textbox(
+                placeholder="Ask about this species (diet, range, behavior...)",
+                label="Your question",
+            )
             btn_ask = gr.Button("Send")
 
+    # Hidden state (no image preview; store bytes only)
+    st_last_image = gr.State(None)   # <-- bytes live here, never sent to any gr.Image
     st_extra_ctx = gr.State({})
     st_chat_msgs = gr.State([])
     st_lc = gr.State([])
     st_thread = gr.State("test1")
 
+    # Wiring
     btn_identify.click(
         do_identify, [image_in],
-        [current_taxon, id_report, st_chat_msgs, image_in, st_extra_ctx, st_lc, st_thread]
+        #              1            2          3            4              5           6        7
+        [current_taxon, id_report, st_chat_msgs, st_last_image, st_extra_ctx, st_lc, st_thread]
     ).then(lambda m: m, st_chat_msgs, chat)
 
     btn_reidentify.click(
-        redo_identify, [image_in, st_thread],
-        [current_taxon, id_report, st_chat_msgs, image_in, st_extra_ctx, st_lc, st_thread]
+        redo_identify, [st_last_image, st_thread],
+        [current_taxon, id_report, st_chat_msgs, st_last_image, st_extra_ctx, st_lc, st_thread]
     ).then(lambda m: m, st_chat_msgs, chat)
 
     btn_ask.click(
@@ -218,10 +252,19 @@ Upload a primate photo, identify the species, and ask questions with context-awa
 
     btn_reset.click(
         reset_all, [],
-        [current_taxon, id_report, st_chat_msgs, image_in, st_extra_ctx, st_lc, st_thread]
+        [current_taxon, id_report, st_chat_msgs, st_last_image, st_extra_ctx, st_lc, st_thread]
     ).then(lambda m: m, st_chat_msgs, chat)
 
-    gr.Markdown("<hr/><div class='footer'><strong>MonoAgent</strong> • LangGraph pipeline with Langfuse tracing.</div>")
+    # Footer
+    gr.Markdown(
+        """
+<hr/>
+<div class="footer">
+<strong>MonoAgent</strong> • Deterministic LangGraph pipeline with Langfuse tracing.<br/>
+Keep credentials in environment variables. For production, configure secrets in your Space/runner.
+</div>
+        """
+    )
 
 if __name__ == "__main__":
     demo.launch()
