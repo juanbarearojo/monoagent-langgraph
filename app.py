@@ -14,6 +14,15 @@ _missing = [k for k in ("LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY", "LANGFUSE_
 if _missing:
     raise RuntimeError(f"[Langfuse] Faltan variables de entorno: {_missing}")
 
+# El CallbackHandler se crea sin parámetros, lee las variables de entorno automáticamente
+try:
+    # Crear un handler de prueba para verificar la configuración
+    test_handler = CallbackHandler()
+    print("✅ Langfuse configurado correctamente")
+except Exception as e:
+    print(f"⚠️ Error configurando Langfuse: {e}")
+    # Continuar de todas formas, manejaremos errores individualmente
+
 # Inicializar cliente Langfuse global
 langfuse_client = Langfuse(
     public_key=os.getenv("LANGFUSE_PUBLIC_KEY"),
@@ -124,11 +133,9 @@ def clear_all_traces():
 
 def create_new_handler():
     """Crea un nuevo handler de Langfuse para cada operación"""
-    return CallbackHandler(
-        public_key=os.getenv("LANGFUSE_PUBLIC_KEY"),
-        secret_key=os.getenv("LANGFUSE_SECRET_KEY"),
-        host=os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com")
-    )
+    # El CallbackHandler de Langfuse no acepta parámetros en el constructor
+    # Se configura con variables de entorno automáticamente
+    return CallbackHandler()
 
 # ───────────────────────── Callbacks ─────────────────────────
 def do_identify(image):
@@ -140,27 +147,40 @@ def do_identify(image):
 
     state_in = {"messages": [], "image_bytes": img_bytes}
 
-    # Crear nuevo handler para cada operación
-    handler = create_new_handler()
+    # Crear nuevo handler para cada operación con manejo de errores
+    try:
+        handler = create_new_handler()
+    except Exception as e:
+        print(f"⚠️ Error creando handler Langfuse: {e}")
+        handler = None
     
     # Crear trace manual si es necesario
-    trace = langfuse_client.trace(name="species_identification")
+    try:
+        trace = langfuse_client.trace(name="species_identification")
+        trace_id = trace.id
+    except Exception as e:
+        print(f"⚠️ Error creando trace manual: {e}")
+        trace = None
+        trace_id = None
     
     try:
-        state_out = get_graph().invoke(
-            state_in,
-            config={
-                "callbacks": [handler], 
-                "configurable": {"thread_id": "test1"},
-                "metadata": {"trace_id": trace.id}  # Metadatos adicionales
-            },
-        )
+        # Configurar callbacks solo si el handler existe
+        config = {"configurable": {"thread_id": "test1"}}
+        if handler:
+            config["callbacks"] = [handler]
+        if trace_id:
+            config["metadata"] = {"trace_id": trace_id}
+            
+        state_out = get_graph().invoke(state_in, config=config)
 
         # Intentar obtener URL de múltiples formas
-        trace_url = get_langfuse_trace_url(handler)
-        if not trace_url and trace.id:
+        trace_url = None
+        if handler:
+            trace_url = get_langfuse_trace_url(handler)
+        
+        if not trace_url and trace_id:
             langfuse_host = os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com").rstrip('/')
-            trace_url = f"{langfuse_host}/trace/{trace.id}"
+            trace_url = f"{langfuse_host}/trace/{trace_id}"
 
         if trace_url:
             print(f"🔍 Traza Langfuse: {trace_url}")
@@ -169,12 +189,14 @@ def do_identify(image):
             print("⚠️ No se pudo obtener URL de traza")
             traces_list = get_all_traces()
 
-        # Finalizar trace
-        trace.update(output={"status": "completed"})
+        # Finalizar trace si existe
+        if trace:
+            trace.update(output={"status": "completed"})
         
     except Exception as e:
         print(f"❌ Error en identificación: {e}")
-        trace.update(output={"status": "error", "error": str(e)})
+        if trace:
+            trace.update(output={"status": "error", "error": str(e)})
         traces_list = get_all_traces()
         state_out = {"messages": [], "pred_label": None}
 
