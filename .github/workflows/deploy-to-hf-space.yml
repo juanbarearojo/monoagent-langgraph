@@ -16,53 +16,78 @@ jobs:
       contents: read
 
     steps:
-      - name: Checkout
+      - name: Checkout (full history, with LFS pointers)
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          lfs: false  # no hace falta descargar LFS aquí; lo usaremos para subir
 
-      - name: Push to Hugging Face Space (exclude cajon_ de sastre + big/binary files)
-        env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          HF_SPACE_REPO: ${{ vars.HF_SPACE_REPO }}
+      - name: Prepare clean snapshot (no .git / caches)
         shell: bash
         run: |
           set -euo pipefail
-
-          if [ -z "${HF_SPACE_REPO:-}" ]; then
-            HF_SPACE_REPO="Barearojojuan/MonoAgent"
-          fi
-
           rm -rf _space_out
           mkdir -p _space_out
 
           rsync -a ./ _space_out \
             --exclude '.git' \
-            --exclude '.gitattributes' \
+            --exclude '.gitattributes.lock' \
             --exclude '.gitmodules' \
             --exclude '.env' \
             --exclude '.venv' \
             --exclude '__pycache__' \
             --exclude '.pytest_cache' \
-            --exclude 'cajon_ de sastre/**' \
-            --exclude 'data/corpus/*.pdf' \
-            --exclude 'model/labels.json' \
-            --exclude 'model/monkey_classifier_ts-v0.1.pt' \
-            --exclude '*.pt' \
-            --exclude '*.bin' \
-            --exclude '*.onnx' \
-            --exclude '*.pdf' \
-            --exclude '*.faiss'
+            --exclude 'cajon_ de sastre/**'
 
-          cd _space_out
+      - name: Init repo + enable Git LFS
+        shell: bash
+        working-directory: _space_out
+        run: |
+          set -euo pipefail
           git init
           git config user.email "actions@github.com"
           git config user.name "github-actions[bot]"
-          git add -A
-          git commit -m "Deploy (excluding cajon_ de sastre + big binaries like .pt/.pdf/.faiss)"
 
-          # Autenticación embebida (como en tu versión que funcionaba)
+          # Instala y activa LFS en el repo temporal
+          git lfs install --local
+
+          # Asegura el tracking de binarios comunes (ajusta patrones si quieres)
+          git lfs track "*.pt" "*.bin" "*.onnx" "*.pdf" "*.faiss" "*.zip" "*.tar" "*.tar.gz" "*.pth"
+          # Guarda .gitattributes
+          git add .gitattributes
+
+          # Opcional: subir el límite de buffer HTTP (ayuda con pushes con muchos objetos)
+          git config http.postBuffer 524288000
+
+      - name: Add and commit changes (skip if no diff)
+        shell: bash
+        working-directory: _space_out
+        run: |
+          set -euo pipefail
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+          git commit -m "Deploy (mirror completo con LFS para binarios y PDFs)"
+
+      - name: Push to Hugging Face Space (with LFS)
+        if: ${{ success() }}
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_SPACE_REPO: ${{ vars.HF_SPACE_REPO }}
+        shell: bash
+        working-directory: _space_out
+        run: |
+          set -euo pipefail
+          if [ -z "${HF_SPACE_REPO:-}" ]; then
+            HF_SPACE_REPO="Barearojojuan/MonoAgent"
+          fi
+          # URL con autenticación
           HF_URL="https://user:${HF_TOKEN}@huggingface.co/spaces/${HF_SPACE_REPO}.git"
           git remote add origin "${HF_URL}"
           git branch -M main
+
+          # Importante: 'git lfs push' asegura que los objetos grandes se suben
+          # solo si faltan en el remoto (por SHA), evitando re-subidas innecesarias.
           git push origin main --force
