@@ -6,41 +6,62 @@ from langchain_core.messages import HumanMessage, AIMessage, BaseMessage
 from agent.graph import build_graph                          # grafo determinista
 from agent.nodes.qa_about_taxon import qa_about_taxon as qa_node
 from langfuse.langchain import CallbackHandler  # si no está instalado, fallará aquí (bien para depurar)
+from langfuse import Langfuse  # Importar Langfuse directamente también
 
 
 # valida presencia explícita
 _missing = [k for k in ("LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY", "LANGFUSE_HOST") if not os.getenv(k)]
 if _missing:
     raise RuntimeError(f"[Langfuse] Faltan variables de entorno: {_missing}")
-handler = CallbackHandler()  # si las claves son inválidas, verás el error en logs
+
+# Inicializar cliente Langfuse global
+langfuse_client = Langfuse(
+    public_key=os.getenv("LANGFUSE_PUBLIC_KEY"),
+    secret_key=os.getenv("LANGFUSE_SECRET_KEY"),
+    host=os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com")
+)
 
 # ───────────────────────── Helpers ─────────────────────────
 def get_langfuse_trace_url(handler: CallbackHandler) -> Optional[str]:
-    """Extrae la URL de la traza de Langfuse del handler"""
+    """Extrae la URL de la traza de Langfuse del handler - versión mejorada"""
     try:
-        # Método directo si existe trace_id
+        langfuse_host = os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com").rstrip('/')
+        
+        # Método 1: trace_id directo
         if hasattr(handler, 'trace_id') and handler.trace_id:
-            langfuse_host = os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com")
             return f"{langfuse_host}/trace/{handler.trace_id}"
         
-        # Método alternativo: buscar en el objeto trace
-        if hasattr(handler, 'trace') and handler.trace:
-            trace_id = getattr(handler.trace, 'id', None)
-            if trace_id:
-                langfuse_host = os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com")
-                return f"{langfuse_host}/trace/{trace_id}"
+        # Método 2: desde el objeto trace
+        if hasattr(handler, 'trace') and handler.trace and hasattr(handler.trace, 'id'):
+            return f"{langfuse_host}/trace/{handler.trace.id}"
         
-        # Otro método: revisar runs recientes
+        # Método 3: desde langfuse_context si existe
+        if hasattr(handler, 'langfuse') and handler.langfuse:
+            if hasattr(handler.langfuse, 'trace_id') and handler.langfuse.trace_id:
+                return f"{langfuse_host}/trace/{handler.langfuse.trace_id}"
+        
+        # Método 4: revisar runs recientes
         if hasattr(handler, 'runs') and handler.runs:
             for run_id, run_data in handler.runs.items():
-                if hasattr(run_data, 'trace_id'):
-                    langfuse_host = os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com")
+                if hasattr(run_data, 'trace_id') and run_data.trace_id:
                     return f"{langfuse_host}/trace/{run_data.trace_id}"
+        
+        # Método 5: buscar en atributos internos
+        for attr in dir(handler):
+            if 'trace' in attr.lower() and not attr.startswith('_'):
+                try:
+                    obj = getattr(handler, attr)
+                    if hasattr(obj, 'id'):
+                        return f"{langfuse_host}/trace/{obj.id}"
+                except:
+                    continue
+        
+        print("⚠️ No se pudo extraer trace_id del handler de Langfuse")
+        return None
         
     except Exception as e:
         print(f"⚠️ Error obteniendo URL Langfuse: {e}")
-    
-    return None
+        return None
 
 def normalize_id_output(state_out: Dict[str, Any]) -> Tuple[Optional[str], Dict[str, Any], Dict[str, Any]]:
     latin = (
@@ -101,40 +122,74 @@ def clear_all_traces():
     _trace_urls = []
     return []
 
+def create_new_handler():
+    """Crea un nuevo handler de Langfuse para cada operación"""
+    return CallbackHandler(
+        public_key=os.getenv("LANGFUSE_PUBLIC_KEY"),
+        secret_key=os.getenv("LANGFUSE_SECRET_KEY"),
+        host=os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com")
+    )
+
 # ───────────────────────── Callbacks ─────────────────────────
 def do_identify(image):
     if image is None:
-        return "(Sube una imagen)", {}, [], None, {}, [], "test1", []
+        return "(Sube una imagen)", {}, [], None, {}, [], "test1", get_all_traces()
 
     buf = io.BytesIO(); image.save(buf, format="PNG")
     img_bytes = buf.getvalue()
 
     state_in = {"messages": [], "image_bytes": img_bytes}
 
-    # Langfuse EXACTO como pediste (handler creado arriba, thread_id fijo)
-    state_out = get_graph().invoke(
-        state_in,
-        config={"callbacks": [handler], "configurable": {"thread_id": "test1"}},
-    )
+    # Crear nuevo handler para cada operación
+    handler = create_new_handler()
+    
+    # Crear trace manual si es necesario
+    trace = langfuse_client.trace(name="species_identification")
+    
+    try:
+        state_out = get_graph().invoke(
+            state_in,
+            config={
+                "callbacks": [handler], 
+                "configurable": {"thread_id": "test1"},
+                "metadata": {"trace_id": trace.id}  # Metadatos adicionales
+            },
+        )
 
-    # 🔗 OPCIÓN A: Mostrar en consola
-    trace_url = get_langfuse_trace_url(handler)
-    if trace_url:
-        print(f"🔍 Traza Langfuse: {trace_url}")
-        # 🔗 OPCIÓN C: Guardar para historial
-        traces_list = add_trace_url(trace_url, "identificación")
-    else:
+        # Intentar obtener URL de múltiples formas
+        trace_url = get_langfuse_trace_url(handler)
+        if not trace_url and trace.id:
+            langfuse_host = os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com").rstrip('/')
+            trace_url = f"{langfuse_host}/trace/{trace.id}"
+
+        if trace_url:
+            print(f"🔍 Traza Langfuse: {trace_url}")
+            traces_list = add_trace_url(trace_url, "identificación")
+        else:
+            print("⚠️ No se pudo obtener URL de traza")
+            traces_list = get_all_traces()
+
+        # Finalizar trace
+        trace.update(output={"status": "completed"})
+        
+    except Exception as e:
+        print(f"❌ Error en identificación: {e}")
+        trace.update(output={"status": "error", "error": str(e)})
         traces_list = get_all_traces()
+        state_out = {"messages": [], "pred_label": None}
 
     latin, id_report, extra_ctx = normalize_id_output(state_out)
+    
     # primer mensaje: el AIMessage de finalize
     finalize_ai = next((m for m in reversed(state_out.get("messages", [])) if isinstance(m, AIMessage)), None)
 
     if not latin:
+        first_msg = "No se pudo identificar. Sube otra imagen y pulsa **Identificar**."
+        ui_msgs = [{"role": "assistant", "content": first_msg}]
         return (
             "No identificado",
             id_report,
-            [{"role": "assistant", "content": "No se pudo identificar. Sube otra imagen y pulsa **Identificar**."}],
+            ui_msgs,
             img_bytes,
             extra_ctx,
             state_out.get("messages", []),
@@ -151,27 +206,51 @@ def redo_identify(last_image, prev_thread_id):
         return "(Sube una imagen)", {}, [], None, {}, [], "test1", get_all_traces()
 
     state_in = {"messages": [], "image_bytes": last_image}
-    state_out = get_graph().invoke(
-        state_in,
-        config={"callbacks": [handler], "configurable": {"thread_id": "test1"}},
-    )
+    
+    # Crear nuevo handler para cada operación
+    handler = create_new_handler()
+    trace = langfuse_client.trace(name="species_reidentification")
+    
+    try:
+        state_out = get_graph().invoke(
+            state_in,
+            config={
+                "callbacks": [handler], 
+                "configurable": {"thread_id": "test1"},
+                "metadata": {"trace_id": trace.id}
+            },
+        )
 
-    # 🔗 OPCIÓN A: Mostrar en consola
-    trace_url = get_langfuse_trace_url(handler)
-    if trace_url:
-        print(f"🔍 Traza Langfuse: {trace_url}")
-        # 🔗 OPCIÓN C: Guardar para historial
-        traces_list = add_trace_url(trace_url, "re-identificación")
-    else:
+        # Obtener URL de traza
+        trace_url = get_langfuse_trace_url(handler)
+        if not trace_url and trace.id:
+            langfuse_host = os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com").rstrip('/')
+            trace_url = f"{langfuse_host}/trace/{trace.id}"
+
+        if trace_url:
+            print(f"🔍 Traza Langfuse: {trace_url}")
+            traces_list = add_trace_url(trace_url, "re-identificación")
+        else:
+            traces_list = get_all_traces()
+
+        trace.update(output={"status": "completed"})
+        
+    except Exception as e:
+        print(f"❌ Error en re-identificación: {e}")
+        trace.update(output={"status": "error", "error": str(e)})
         traces_list = get_all_traces()
+        state_out = {"messages": [], "pred_label": None}
 
     latin, id_report, extra_ctx = normalize_id_output(state_out)
     finalize_ai = next((m for m in reversed(state_out.get("messages", [])) if isinstance(m, AIMessage)), None)
+    
     if not latin:
+        first_msg = "No se pudo identificar. Prueba con otra imagen."
+        ui_msgs = [{"role": "assistant", "content": first_msg}]
         return (
             "No identificado",
             id_report,
-            [{"role": "assistant", "content": "No se pudo identificar. Prueba con otra imagen."}],
+            ui_msgs,
             last_image,
             extra_ctx,
             state_out.get("messages", []),
@@ -180,7 +259,8 @@ def redo_identify(last_image, prev_thread_id):
         )
 
     first_msg = finalize_ai.content if finalize_ai else f"Identificado: **{latin}**."
-    return latin, id_report, [{"role": "assistant", "content": first_msg}], last_image, extra_ctx, state_out.get("messages", []), "test1", traces_list
+    ui_msgs = [{"role": "assistant", "content": first_msg}]
+    return latin, id_report, ui_msgs, last_image, extra_ctx, state_out.get("messages", []), "test1", traces_list
 
 def do_chat(user_msg, current_taxon, ui_messages, id_report, extra_ctx, lc_messages, thread_id, traces_list):
     user_msg = (user_msg or "").strip()
@@ -204,11 +284,24 @@ def do_chat(user_msg, current_taxon, ui_messages, id_report, extra_ctx, lc_messa
     state_in = {"messages": lc_hist, "current_taxon": current_taxon, "context_md": build_context_md(extra_ctx)}
 
     try:
+        # Crear trace para QA
+        trace = langfuse_client.trace(name="qa_chat", input={"question": user_msg, "taxon": current_taxon})
+        
         state_out = qa_node(state_in)
+        
+        trace.update(output={"status": "completed"})
+        
+        # Generar URL para esta operación también
+        langfuse_host = os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com").rstrip('/')
+        qa_trace_url = f"{langfuse_host}/trace/{trace.id}"
+        traces_list = add_trace_url(qa_trace_url, "chat QA")
+        
     except Exception as e:
+        error_msg = f"Error en QA: {e}"
+        print(f"❌ {error_msg}")
         return ui_messages + [
             {"role": "user", "content": user_msg},
-            {"role": "assistant", "content": f"Error en QA: {e}"}
+            {"role": "assistant", "content": error_msg}
         ], "", lc_hist, traces_list
 
     last_ai = next((m for m in reversed(state_out.get("messages", [])) if isinstance(m, AIMessage)), None)
@@ -358,6 +451,36 @@ custom_css = """
     transition: all 0.3s ease !important;
 }
 
+/* Estilos para trazas de Langfuse */
+.trace-container {
+    padding: 15px;
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.1);
+    backdrop-filter: blur(10px);
+    max-height: 200px;
+    overflow-y: auto;
+}
+
+.trace-item {
+    padding: 8px 12px;
+    margin: 5px 0;
+    background: rgba(0, 255, 136, 0.1);
+    border-radius: 8px;
+    border-left: 3px solid #00ff88;
+}
+
+.trace-link {
+    color: #00ff88 !important;
+    text-decoration: none;
+    font-size: 12px;
+    word-break: break-all;
+}
+
+.trace-link:hover {
+    color: #4ECDC4 !important;
+    text-decoration: underline;
+}
+
 /* Animaciones sutiles */
 @keyframes float {
     0% { transform: translateY(0px); }
@@ -484,7 +607,8 @@ with gr.Blocks(
         type="messages", 
         height=420,
         elem_classes=["chatbot-container"],
-        avatar_images=("🧑‍🔬", "🤖")
+        avatar_images=("🧑‍🔬", "🤖"),
+        value=[]  # Inicializar explícitamente con lista vacía
     )
     
     with gr.Row():
@@ -501,7 +625,7 @@ with gr.Blocks(
             size="lg"
         )
     
-        gr.HTML('</div>')
+    gr.HTML('</div>')
 
     # 🔗 Sección de Trazabilidad (OPCIÓN C)
     gr.HTML("""
@@ -549,35 +673,49 @@ with gr.Blocks(
     st_thread = gr.State("test1")
     st_traces = gr.State([])  # 🔗 Nuevo estado para trazas
 
-    # Eventos (actualizados con trazas)
+    # Eventos (actualizados con trazas) - CORREGIDO: función lambda para actualizar chat
     btn_identify.click(
         do_identify, [image_in],
         [current_taxon, id_report, st_chat_msgs, st_last_image, st_extra_ctx, st_lc, st_thread, st_traces]
-    ).then(lambda m: m, st_chat_msgs, chat).then(
+    ).then(
+        lambda m: m, st_chat_msgs, chat  # CORRECCIÓN: Asegurar que los mensajes se muestren
+    ).then(
         update_traces_display, st_traces, traces_display
     )
 
     btn_reidentify.click(
         redo_identify, [st_last_image, st_thread],
         [current_taxon, id_report, st_chat_msgs, st_last_image, st_extra_ctx, st_lc, st_thread, st_traces]
-    ).then(lambda m: m, st_chat_msgs, chat).then(
+    ).then(
+        lambda m: m, st_chat_msgs, chat  # CORRECCIÓN: Asegurar que los mensajes se muestren
+    ).then(
         update_traces_display, st_traces, traces_display
     )
 
     btn_ask.click(
         do_chat, [user_box, current_taxon, st_chat_msgs, id_report, st_extra_ctx, st_lc, st_thread, st_traces],
         [st_chat_msgs, user_box, st_lc, st_traces]
-    ).then(lambda m: m, st_chat_msgs, chat)
+    ).then(
+        lambda m: m, st_chat_msgs, chat  # CORRECCIÓN: Asegurar que los mensajes se muestren
+    ).then(
+        update_traces_display, st_traces, traces_display
+    )
 
     user_box.submit(
         do_chat, [user_box, current_taxon, st_chat_msgs, id_report, st_extra_ctx, st_lc, st_thread, st_traces],
         [st_chat_msgs, user_box, st_lc, st_traces]
-    ).then(lambda m: m, st_chat_msgs, chat)
+    ).then(
+        lambda m: m, st_chat_msgs, chat  # CORRECCIÓN: Asegurar que los mensajes se muestren
+    ).then(
+        update_traces_display, st_traces, traces_display
+    )
 
     btn_reset.click(
         reset_all, [],
         [current_taxon, id_report, st_chat_msgs, st_last_image, st_extra_ctx, st_lc, st_thread, st_traces]
-    ).then(lambda m: m, st_chat_msgs, chat).then(
+    ).then(
+        lambda m: m, st_chat_msgs, chat  # CORRECCIÓN: Asegurar que los mensajes se muestren
+    ).then(
         update_traces_display, st_traces, traces_display
     )
 
