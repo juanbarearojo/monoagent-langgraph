@@ -1,47 +1,24 @@
-# app.py
+# app.py - Interfaz Mejorada
 from typing import Any, Dict, List, Optional, Tuple
 import io, os
+
 import gradio as gr
 from langchain_core.messages import HumanMessage, AIMessage, BaseMessage
+
+# ───────────────────────── Proyecto (ajusta si difiere) ─────────────────
 from agent.graph import build_graph                          # grafo determinista
 from agent.nodes.qa_about_taxon import qa_about_taxon as qa_node
-from langfuse.langchain import CallbackHandler  # si no está instalado, fallará aquí (bien para depurar)
 
+# ───────────────────────── Langfuse (estricto, sin try/except) ─────────
+from langfuse.langchain import CallbackHandler
 
 # valida presencia explícita
 _missing = [k for k in ("LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY", "LANGFUSE_HOST") if not os.getenv(k)]
 if _missing:
     raise RuntimeError(f"[Langfuse] Faltan variables de entorno: {_missing}")
-handler = CallbackHandler()  # si las claves son inválidas, verás el error en logs
+handler = CallbackHandler()
 
-# ───────────────────────── Helpers ─────────────────────────
-def get_langfuse_trace_url(handler: CallbackHandler) -> Optional[str]:
-    """Extrae la URL de la traza de Langfuse del handler"""
-    try:
-        # Método directo si existe trace_id
-        if hasattr(handler, 'trace_id') and handler.trace_id:
-            langfuse_host = os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com")
-            return f"{langfuse_host}/trace/{handler.trace_id}"
-        
-        # Método alternativo: buscar en el objeto trace
-        if hasattr(handler, 'trace') and handler.trace:
-            trace_id = getattr(handler.trace, 'id', None)
-            if trace_id:
-                langfuse_host = os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com")
-                return f"{langfuse_host}/trace/{trace_id}"
-        
-        # Otro método: revisar runs recientes
-        if hasattr(handler, 'runs') and handler.runs:
-            for run_id, run_data in handler.runs.items():
-                if hasattr(run_data, 'trace_id'):
-                    langfuse_host = os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com")
-                    return f"{langfuse_host}/trace/{run_data.trace_id}"
-        
-    except Exception as e:
-        print(f"⚠️ Error obteniendo URL Langfuse: {e}")
-    
-    return None
-
+# ───────────────────────── Helpers (sin cambios) ─────────────────────────
 def normalize_id_output(state_out: Dict[str, Any]) -> Tuple[Optional[str], Dict[str, Any], Dict[str, Any]]:
     latin = (
         (state_out.get("_tmp", {}) or {}).get("latin_name")
@@ -76,79 +53,52 @@ def get_graph():
         _graph = build_graph()
     return _graph
 
-# 🔗 Lista global para guardar todos los enlaces de trazas
-_trace_urls = []
-
-def add_trace_url(url: str, operation: str = "identificación"):
-    """Añade una nueva URL de traza a la lista global"""
-    global _trace_urls
-    timestamp = __import__('datetime').datetime.now().strftime("%H:%M:%S")
-    _trace_urls.append({
-        "timestamp": timestamp,
-        "operation": operation,
-        "url": url,
-        "display": f"🕐 {timestamp} - {operation.title()}"
-    })
-    return _trace_urls
-
-def get_all_traces():
-    """Retorna todas las trazas guardadas"""
-    return _trace_urls
-
-def clear_all_traces():
-    """Limpia todas las trazas guardadas"""
-    global _trace_urls
-    _trace_urls = []
-    return []
-
-# ───────────────────────── Callbacks ─────────────────────────
+# ───────────────────────── Callbacks (sin cambios funcionales) ─────────────────────────
 def do_identify(image):
     if image is None:
-        return "(Sube una imagen)", {}, [], None, {}, [], "test1", []
+        return "(Sube una imagen)", {}, [], None, {}, [], "test1", "", ""
 
     buf = io.BytesIO(); image.save(buf, format="PNG")
     img_bytes = buf.getvalue()
 
     state_in = {"messages": [], "image_bytes": img_bytes}
 
-    # Langfuse EXACTO como pediste (handler creado arriba, thread_id fijo)
     state_out = get_graph().invoke(
         state_in,
         config={"callbacks": [handler], "configurable": {"thread_id": "test1"}},
     )
 
-    # 🔗 OPCIÓN A: Mostrar en consola
-    trace_url = get_langfuse_trace_url(handler)
-    if trace_url:
-        print(f"🔍 Traza Langfuse: {trace_url}")
-        # 🔗 OPCIÓN C: Guardar para historial
-        traces_list = add_trace_url(trace_url, "identificación")
-    else:
-        traces_list = get_all_traces()
-
     latin, id_report, extra_ctx = normalize_id_output(state_out)
-    # primer mensaje: el AIMessage de finalize
     finalize_ai = next((m for m in reversed(state_out.get("messages", [])) if isinstance(m, AIMessage)), None)
 
     if not latin:
         return (
-            "No identificado",
+            "❌ No identificado",
             id_report,
-            [{"role": "assistant", "content": "No se pudo identificar. Sube otra imagen y pulsa **Identificar**."}],
+            [{"role": "assistant", "content": "🔍 No se pudo identificar la especie. Intenta con otra imagen más clara."}],
             img_bytes,
             extra_ctx,
             state_out.get("messages", []),
             "test1",
-            traces_list,
+            "⚠️ Identificación fallida",
+            "Prueba con una imagen de mejor calidad o con mejor iluminación."
         )
 
-    first_msg = finalize_ai.content if finalize_ai else f"Identificado: **{latin}**."
+    # Extraer información adicional para mostrar
+    confidence = id_report.get("entropy", 0)
+    confidence_text = "Alta" if confidence < 0.5 else "Media" if confidence < 1.0 else "Baja"
+    
+    first_msg = finalize_ai.content if finalize_ai else f"✅ Identificado como **{latin}**"
     ui_msgs = [{"role": "assistant", "content": first_msg}]
-    return latin, id_report, ui_msgs, img_bytes, extra_ctx, state_out.get("messages", []), "test1", traces_list
+    
+    status_title = f"🎯 Identificación exitosa"
+    status_desc = f"Especie: {latin} | Confianza: {confidence_text}"
+    
+    return latin, id_report, ui_msgs, img_bytes, extra_ctx, state_out.get("messages", []), "test1", status_title, status_desc
 
 def redo_identify(last_image, prev_thread_id):
     if not last_image:
-        return "(Sube una imagen)", {}, [], None, {}, [], "test1", get_all_traces()
+        return "(Sube una imagen)", {}, [], None, {}, [], "test1", "", ""
 
     state_in = {"messages": [], "image_bytes": last_image}
     state_out = get_graph().invoke(
@@ -156,49 +106,47 @@ def redo_identify(last_image, prev_thread_id):
         config={"callbacks": [handler], "configurable": {"thread_id": "test1"}},
     )
 
-    # 🔗 OPCIÓN A: Mostrar en consola
-    trace_url = get_langfuse_trace_url(handler)
-    if trace_url:
-        print(f"🔍 Traza Langfuse: {trace_url}")
-        # 🔗 OPCIÓN C: Guardar para historial
-        traces_list = add_trace_url(trace_url, "re-identificación")
-    else:
-        traces_list = get_all_traces()
-
     latin, id_report, extra_ctx = normalize_id_output(state_out)
     finalize_ai = next((m for m in reversed(state_out.get("messages", [])) if isinstance(m, AIMessage)), None)
+    
     if not latin:
         return (
-            "No identificado",
+            "❌ No identificado",
             id_report,
-            [{"role": "assistant", "content": "No se pudo identificar. Prueba con otra imagen."}],
+            [{"role": "assistant", "content": "🔍 No se pudo identificar la especie. Prueba con otra imagen."}],
             last_image,
             extra_ctx,
             state_out.get("messages", []),
             "test1",
-            traces_list,
+            "⚠️ Identificación fallida",
+            "Prueba con una imagen diferente."
         )
 
-    first_msg = finalize_ai.content if finalize_ai else f"Identificado: **{latin}**."
-    return latin, id_report, [{"role": "assistant", "content": first_msg}], last_image, extra_ctx, state_out.get("messages", []), "test1", traces_list
+    confidence = id_report.get("entropy", 0)
+    confidence_text = "Alta" if confidence < 0.5 else "Media" if confidence < 1.0 else "Baja"
+    
+    first_msg = finalize_ai.content if finalize_ai else f"✅ Re-identificado como **{latin}**"
+    status_title = f"🔄 Re-identificación exitosa"
+    status_desc = f"Especie: {latin} | Confianza: {confidence_text}"
+    
+    return latin, id_report, [{"role": "assistant", "content": first_msg}], last_image, extra_ctx, state_out.get("messages", []), "test1", status_title, status_desc
 
-def do_chat(user_msg, current_taxon, ui_messages, id_report, extra_ctx, lc_messages, thread_id, traces_list):
+def do_chat(user_msg, current_taxon, ui_messages, id_report, extra_ctx, lc_messages, thread_id):
     user_msg = (user_msg or "").strip()
     if not user_msg:
-        return ui_messages, "", lc_messages, traces_list
-    if not current_taxon or current_taxon.startswith("("):
+        return ui_messages, "", lc_messages
+    if not current_taxon or current_taxon.startswith("(") or current_taxon.startswith("❌"):
         return ui_messages + [
             {"role": "user", "content": user_msg},
-            {"role": "assistant", "content": "Primero identifica una especie."}
-        ], "", lc_messages, traces_list
+            {"role": "assistant", "content": "⚠️ Primero necesitas identificar una especie para poder hacer preguntas sobre ella."}
+        ], "", lc_messages
 
-    # guard si no hay clave de OpenAI → no colgamos
     if not os.getenv("OPENAI_API_KEY"):
-        msg = "QA deshabilitado: falta `OPENAI_API_KEY` en el entorno."
+        msg = "🔧 Sistema de preguntas deshabilitado: falta configuración de OpenAI."
         return ui_messages + [
             {"role": "user", "content": user_msg},
             {"role": "assistant", "content": msg}
-        ], "", lc_messages, traces_list
+        ], "", lc_messages
 
     lc_hist = list(lc_messages) + [HumanMessage(content=user_msg)]
     state_in = {"messages": lc_hist, "current_taxon": current_taxon, "context_md": build_context_md(extra_ctx)}
@@ -208,367 +156,374 @@ def do_chat(user_msg, current_taxon, ui_messages, id_report, extra_ctx, lc_messa
     except Exception as e:
         return ui_messages + [
             {"role": "user", "content": user_msg},
-            {"role": "assistant", "content": f"Error en QA: {e}"}
-        ], "", lc_hist, traces_list
+            {"role": "assistant", "content": f"❌ Error procesando tu pregunta: {str(e)[:100]}..."}
+        ], "", lc_hist
 
     last_ai = next((m for m in reversed(state_out.get("messages", [])) if isinstance(m, AIMessage)), None)
-    answer = (last_ai.content if last_ai else "").strip() or "No he podido generar respuesta de QA ahora mismo."
+    answer = (last_ai.content if last_ai else "").strip() or "🤔 No pude generar una respuesta en este momento. Intenta reformular tu pregunta."
     new_ui = ui_messages + [
         {"role": "user", "content": user_msg},
         {"role": "assistant", "content": answer},
     ]
-    return new_ui, "", state_out.get("messages", []), traces_list
+    return new_ui, "", state_out.get("messages", [])
 
 def reset_all():
-    clear_all_traces()  # 🧹 Limpiar historial de trazas
-    return "(Sube una imagen)", {}, [], None, {}, [], "test1", []
+    return "(Sube una imagen)", {}, [], None, {}, [], "test1", "🆕 Sesión reiniciada", "Sube una nueva imagen para comenzar"
 
 # ───────────────────────── CSS Personalizado ─────────────────────────
 custom_css = """
-/* Tema principal con gradientes y glassmorphism */
+/* Tema principal */
 .gradio-container {
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%) !important;
     font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    min-height: 100vh;
 }
 
-/* Header estilizado */
-.main-header {
-    background: rgba(255, 255, 255, 0.1) !important;
-    backdrop-filter: blur(20px) !important;
-    border: 1px solid rgba(255, 255, 255, 0.2) !important;
-    border-radius: 20px !important;
-    padding: 25px !important;
-    margin-bottom: 25px !important;
-    text-align: center !important;
-    box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.37) !important;
+/* Contenedor principal */
+.main-container {
+    background: rgba(255, 255, 255, 0.95);
+    backdrop-filter: blur(10px);
+    border-radius: 20px;
+    box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+    margin: 20px;
+    padding: 30px;
 }
 
-/* Cards con efecto glass */
-.glass-card {
-    background: rgba(255, 255, 255, 0.15) !important;
-    backdrop-filter: blur(20px) !important;
-    border: 1px solid rgba(255, 255, 255, 0.2) !important;
-    border-radius: 15px !important;
-    padding: 20px !important;
-    margin: 10px 0 !important;
-    box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.37) !important;
+/* Header */
+.app-header {
+    text-align: center;
+    margin-bottom: 30px;
+    padding: 20px;
+    background: linear-gradient(135deg, #667eea, #764ba2);
+    border-radius: 15px;
+    color: white;
+    box-shadow: 0 10px 25px rgba(102, 126, 234, 0.3);
 }
 
-/* Botones modernos */
-.modern-btn {
-    background: linear-gradient(45deg, #FF6B6B, #4ECDC4) !important;
+.app-title {
+    font-size: 2.5rem;
+    font-weight: 700;
+    margin: 0;
+    text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+}
+
+.app-subtitle {
+    font-size: 1.1rem;
+    margin: 10px 0 0 0;
+    opacity: 0.9;
+}
+
+/* Botones principales */
+.primary-btn {
+    background: linear-gradient(135deg, #667eea, #764ba2) !important;
+    color: white !important;
     border: none !important;
-    border-radius: 25px !important;
+    border-radius: 12px !important;
     padding: 12px 24px !important;
-    color: white !important;
     font-weight: 600 !important;
-    font-size: 14px !important;
+    font-size: 1rem !important;
     transition: all 0.3s ease !important;
-    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2) !important;
-    text-transform: uppercase !important;
-    letter-spacing: 0.5px !important;
+    box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4) !important;
 }
 
-.modern-btn:hover {
+.primary-btn:hover {
     transform: translateY(-2px) !important;
-    box-shadow: 0 8px 25px rgba(0, 0, 0, 0.3) !important;
-    background: linear-gradient(45deg, #FF5252, #26C6DA) !important;
+    box-shadow: 0 8px 25px rgba(102, 126, 234, 0.6) !important;
 }
 
-/* Botón de reset especial */
-.reset-btn {
-    background: linear-gradient(45deg, #FF4081, #9C27B0) !important;
-}
-
-.reset-btn:hover {
-    background: linear-gradient(45deg, #E91E63, #673AB7) !important;
-}
-
-/* Botón re-identificar */
-.reidentify-btn {
-    background: linear-gradient(45deg, #FFC107, #FF9800) !important;
-}
-
-.reidentify-btn:hover {
-    background: linear-gradient(45deg, #FFB300, #F57C00) !important;
-}
-
-/* Input boxes mejorados */
-.modern-input {
-    background: rgba(255, 255, 255, 0.2) !important;
-    border: 2px solid rgba(255, 255, 255, 0.3) !important;
-    border-radius: 15px !important;
-    padding: 15px !important;
+.secondary-btn {
+    background: linear-gradient(135deg, #f093fb, #f5576c) !important;
     color: white !important;
-    backdrop-filter: blur(10px) !important;
-    font-size: 16px !important;
+    border: none !important;
+    border-radius: 12px !important;
+    padding: 10px 20px !important;
+    font-weight: 500 !important;
+    transition: all 0.3s ease !important;
+    box-shadow: 0 4px 15px rgba(245, 87, 108, 0.4) !important;
 }
 
-.modern-input:focus {
-    border-color: #4ECDC4 !important;
-    box-shadow: 0 0 0 3px rgba(78, 205, 196, 0.3) !important;
-    outline: none !important;
+.secondary-btn:hover {
+    transform: translateY(-2px) !important;
+    box-shadow: 0 8px 25px rgba(245, 87, 108, 0.6) !important;
 }
 
-.modern-input::placeholder {
-    color: rgba(255, 255, 255, 0.7) !important;
-}
-
-/* Chatbot mejorado */
-.chatbot-container {
-    background: rgba(255, 255, 255, 0.1) !important;
-    backdrop-filter: blur(20px) !important;
-    border: 1px solid rgba(255, 255, 255, 0.2) !important;
-    border-radius: 20px !important;
-    box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.37) !important;
-}
-
-/* Mensajes del chat */
-.message {
-    background: rgba(255, 255, 255, 0.15) !important;
+/* Área de imagen */
+.image-upload {
+    border: 3px dashed #667eea !important;
     border-radius: 15px !important;
-    padding: 15px !important;
-    margin: 8px 0 !important;
-    backdrop-filter: blur(10px) !important;
-    border: 1px solid rgba(255, 255, 255, 0.1) !important;
-}
-
-/* Labels y texto */
-.gradio-label {
-    color: white !important;
-    font-weight: 600 !important;
-    font-size: 16px !important;
-    text-shadow: 0 2px 4px rgba(0, 0, 0, 0.3) !important;
-}
-
-/* JSON viewer */
-.json-viewer {
-    background: rgba(0, 0, 0, 0.3) !important;
-    border-radius: 15px !important;
-    padding: 15px !important;
-    font-family: 'Courier New', monospace !important;
-    color: #00ff88 !important;
-    backdrop-filter: blur(10px) !important;
-}
-
-/* Efectos de hover para cards */
-.glass-card:hover {
-    transform: translateY(-5px) !important;
-    box-shadow: 0 12px 40px 0 rgba(31, 38, 135, 0.5) !important;
+    background: linear-gradient(135deg, rgba(102, 126, 234, 0.1), rgba(118, 75, 162, 0.1)) !important;
     transition: all 0.3s ease !important;
 }
 
-/* Animaciones sutiles */
-@keyframes float {
-    0% { transform: translateY(0px); }
-    50% { transform: translateY(-10px); }
-    100% { transform: translateY(0px); }
+.image-upload:hover {
+    border-color: #764ba2 !important;
+    background: linear-gradient(135deg, rgba(102, 126, 234, 0.2), rgba(118, 75, 162, 0.2)) !important;
 }
 
-.float-animation {
-    animation: float 6s ease-in-out infinite !important;
+/* Panel de resultados */
+.result-panel {
+    background: linear-gradient(135deg, rgba(102, 126, 234, 0.05), rgba(118, 75, 162, 0.05));
+    border-radius: 15px;
+    border: 1px solid rgba(102, 126, 234, 0.2);
+    padding: 20px;
+    margin: 15px 0;
 }
 
-/* Responsive design */
+/* Chat */
+.chat-container {
+    background: white;
+    border-radius: 15px;
+    border: 1px solid rgba(102, 126, 234, 0.2);
+    box-shadow: 0 5px 20px rgba(0,0,0,0.1);
+}
+
+/* Status cards */
+.status-card {
+    background: linear-gradient(135deg, #4facfe, #00f2fe);
+    color: white;
+    border-radius: 12px;
+    padding: 15px;
+    text-align: center;
+    box-shadow: 0 5px 20px rgba(79, 172, 254, 0.3);
+    margin: 10px 0;
+}
+
+.status-card.success {
+    background: linear-gradient(135deg, #43e97b, #38f9d7);
+}
+
+.status-card.warning {
+    background: linear-gradient(135deg, #fa709a, #fee140);
+}
+
+.status-card.error {
+    background: linear-gradient(135deg, #ff6b6b, #ee5a52);
+}
+
+/* Inputs */
+.input-field {
+    border-radius: 12px !important;
+    border: 2px solid rgba(102, 126, 234, 0.3) !important;
+    transition: all 0.3s ease !important;
+    font-size: 1rem !important;
+}
+
+.input-field:focus {
+    border-color: #667eea !important;
+    box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1) !important;
+}
+
+/* Animaciones */
+@keyframes pulse {
+    0% { transform: scale(1); }
+    50% { transform: scale(1.05); }
+    100% { transform: scale(1); }
+}
+
+.processing {
+    animation: pulse 2s infinite;
+}
+
+/* Responsive */
 @media (max-width: 768px) {
-    .glass-card {
-        margin: 5px !important;
-        padding: 15px !important;
+    .app-title {
+        font-size: 2rem;
     }
     
-    .modern-btn {
-        padding: 10px 20px !important;
-        font-size: 12px !important;
+    .main-container {
+        margin: 10px;
+        padding: 20px;
     }
 }
 """
 
-# ───────────────────────── UI (Gradio) ─────────────────────────
+# ───────────────────────── UI Mejorada (Gradio) ─────────────────────────
 with gr.Blocks(
-    title="🔬 MonoAgent · Identificación + QA", 
+    title="🔬 BioIdentify AI - Identificación Inteligente de Especies",
     css=custom_css,
-    theme=gr.themes.Glass()
+    theme=gr.themes.Soft(
+        primary_hue="blue",
+        secondary_hue="purple",
+        neutral_hue="slate",
+        font=gr.themes.GoogleFont("Inter")
+    )
 ) as demo:
     
-    # Header principal
+    # Header
     gr.HTML("""
-        <div class="main-header float-animation">
-            <h1 style="color: white; font-size: 2.5em; margin: 0; text-shadow: 0 4px 8px rgba(0,0,0,0.3);">
-                🔬 MonoAgent AI
-            </h1>
-            <p style="color: rgba(255,255,255,0.9); font-size: 1.2em; margin: 10px 0 0 0; font-weight: 300;">
-                Identificación de Especies + Asistente Inteligente
-            </p>
+        <div class="app-header">
+            <h1 class="app-title">🔬 BioIdentify AI</h1>
+            <p class="app-subtitle">Identificación inteligente de especies con IA avanzada</p>
         </div>
     """)
     
     with gr.Row():
+        # Columna izquierda - Carga y identificación
         with gr.Column(scale=1):
-            gr.HTML('<div class="glass-card">')
-            
-            gr.HTML("""
-                <div style="text-align: center; margin-bottom: 20px;">
-                    <h3 style="color: white; margin: 0; text-shadow: 0 2px 4px rgba(0,0,0,0.3);">
-                        📸 Subir Imagen
-                    </h3>
-                </div>
-            """)
-            
+            gr.Markdown("### 📸 Carga tu imagen")
             image_in = gr.Image(
-                label="", 
+                label="Arrastra o selecciona una imagen",
                 type="pil",
-                elem_classes=["modern-input"],
+                elem_classes=["image-upload"],
                 height=300
             )
             
             with gr.Row():
                 btn_identify = gr.Button(
-                    "🔍 Identificar", 
-                    elem_classes=["modern-btn"],
-                    size="lg"
+                    "🔍 Identificar Especie",
+                    variant="primary",
+                    elem_classes=["primary-btn"],
+                    scale=2
                 )
                 btn_reidentify = gr.Button(
-                    "↻ Re-identificar", 
-                    elem_classes=["modern-btn", "reidentify-btn"],
-                    size="lg"
+                    "🔄 Re-identificar",
+                    variant="secondary", 
+                    elem_classes=["secondary-btn"],
+                    scale=1
                 )
             
             btn_reset = gr.Button(
-                "🧹 Reiniciar Todo", 
-                elem_classes=["modern-btn", "reset-btn"],
-                size="lg",
-                variant="secondary"
+                "🧹 Nueva Sesión",
+                variant="stop",
+                elem_classes=["secondary-btn"]
             )
             
-            gr.HTML('</div>')
-            
-        with gr.Column(scale=1):
-            gr.HTML('<div class="glass-card">')
-            
-            gr.HTML("""
-                <div style="text-align: center; margin-bottom: 20px;">
-                    <h3 style="color: white; margin: 0; text-shadow: 0 2px 4px rgba(0,0,0,0.3);">
-                        🧬 Resultados
-                    </h3>
+            # Status card
+            status_display = gr.HTML(
+                value="""
+                <div class="status-card">
+                    <strong>🆕 Sesión iniciada</strong><br>
+                    <small>Sube una imagen para comenzar</small>
                 </div>
-            """)
-            
-            current_taxon = gr.Label(
-                value="(Sube una imagen)", 
-                label="🦋 Especie Identificada",
-                elem_classes=["glass-card"]
+                """,
+                elem_classes=["status-card"]
             )
-            
-            id_report = gr.JSON(
-                label="📊 Detalle de Predicción",
-                elem_classes=["json-viewer"]
-            )
-            
-            gr.HTML('</div>')
-
-    # Sección de Chat
-    gr.HTML("""
-        <div class="glass-card" style="margin-top: 20px;">
-            <div style="text-align: center; margin-bottom: 20px;">
-                <h3 style="color: white; margin: 0; text-shadow: 0 2px 4px rgba(0,0,0,0.3);">
-                    💬 Pregunta sobre la Especie
-                </h3>
-                <p style="color: rgba(255,255,255,0.8); margin: 5px 0 0 0; font-size: 14px;">
-                    Haz preguntas sobre la especie identificada
-                </p>
-            </div>
-    """)
-    
-    chat = gr.Chatbot(
-        label="", 
-        type="messages", 
-        height=420,
-        elem_classes=["chatbot-container"],
-        avatar_images=("🧑‍🔬", "🤖")
-    )
-    
-    with gr.Row():
-        user_box = gr.Textbox(
-            placeholder="Escribe tu pregunta aquí... ¿Dónde vive esta especie?", 
-            label="",
-            elem_classes=["modern-input"],
-            scale=4
-        )
-        btn_ask = gr.Button(
-            "📤 Enviar", 
-            elem_classes=["modern-btn"],
-            scale=1,
-            size="lg"
-        )
-    
-        gr.HTML('</div>')
-
-
-    
-    traces_display = gr.HTML(
-        value="<div class='trace-container'><p style='color: rgba(255,255,255,0.7); text-align: center; margin: 20px;'>No hay trazas aún. Ejecuta una identificación.</p></div>",
-        label=""
-    )
-    
-    def update_traces_display(traces_list):
-        """Genera HTML para mostrar las trazas"""
-        if not traces_list:
-            return "<div class='trace-container'><p style='color: rgba(255,255,255,0.7); text-align: center; margin: 20px;'>No hay trazas aún. Ejecuta una identificación.</p></div>"
         
-        html_content = "<div class='trace-container'>"
-        for trace in reversed(traces_list[-10:]):  # Mostrar últimas 10 trazas
-            html_content += f"""
-                <div class='trace-item'>
-                    <span style='color: #00ff88;'>{trace['display']}</span><br>
-                    <a href='{trace['url']}' target='_blank' class='trace-link'>
-                        🔗 {trace['url']}
-                    </a>
-                </div>
-            """
-        html_content += "</div>"
-        return html_content
+        # Columna derecha - Resultados
+        with gr.Column(scale=1):
+            gr.Markdown("### 🎯 Resultados de identificación")
+            
+            with gr.Group(elem_classes=["result-panel"]):
+                current_taxon = gr.Label(
+                    value="(Sube una imagen)",
+                    label="🏷️ Especie identificada",
+                    show_label=True
+                )
+                
+                with gr.Accordion("📊 Detalles técnicos", open=False):
+                    id_report = gr.JSON(
+                        label="Información detallada",
+                        show_label=False
+                    )
     
-    gr.HTML('</div>')
+    # Sección de chat
+    gr.Markdown("### 💬 Pregunta sobre la especie identificada")
+    
+    with gr.Group(elem_classes=["chat-container"]):
+        chat = gr.Chatbot(
+            label="",
+            type="messages",
+            height=400,
+            show_label=False,
+            avatar_images=(
+                "https://cdn-icons-png.flaticon.com/512/1077/1077114.png",  # Usuario
+                "https://cdn-icons-png.flaticon.com/512/4712/4712027.png"   # Bot
+            )
+        )
+        
+        with gr.Row():
+            user_box = gr.Textbox(
+                placeholder="Escribe tu pregunta sobre la especie identificada...",
+                label="",
+                show_label=False,
+                scale=4,
+                elem_classes=["input-field"]
+            )
+            btn_ask = gr.Button(
+                "➤ Enviar",
+                variant="primary",
+                scale=1,
+                elem_classes=["primary-btn"]
+            )
 
-    # Estados (actualizados)
+    # Estados (hidden)
     st_last_image = gr.State(None)
     st_extra_ctx = gr.State({})
     st_chat_msgs = gr.State([])
     st_lc = gr.State([])
     st_thread = gr.State("test1")
-    st_traces = gr.State([])  # 🔗 Nuevo estado para trazas
+    st_status_title = gr.State("")
+    st_status_desc = gr.State("")
 
-    # Eventos (actualizados con trazas)
+    # Función para actualizar status
+    def update_status_display(title, desc):
+        if "exitosa" in title:
+            card_class = "success"
+        elif "fallida" in title or "Error" in title:
+            card_class = "error"
+        elif "reiniciada" in title:
+            card_class = "warning"
+        else:
+            card_class = ""
+            
+        return f"""
+        <div class="status-card {card_class}">
+            <strong>{title}</strong><br>
+            <small>{desc}</small>
+        </div>
+        """
+
+    # Event handlers
     btn_identify.click(
         do_identify, [image_in],
-        [current_taxon, id_report, st_chat_msgs, st_last_image, st_extra_ctx, st_lc, st_thread, st_traces]
-    ).then(lambda m: m, st_chat_msgs, chat).then(
-        update_traces_display, st_traces, traces_display
+        [current_taxon, id_report, st_chat_msgs, st_last_image, st_extra_ctx, st_lc, st_thread, st_status_title, st_status_desc]
+    ).then(
+        lambda m: m, st_chat_msgs, chat
+    ).then(
+        update_status_display, [st_status_title, st_status_desc], status_display
     )
 
     btn_reidentify.click(
         redo_identify, [st_last_image, st_thread],
-        [current_taxon, id_report, st_chat_msgs, st_last_image, st_extra_ctx, st_lc, st_thread, st_traces]
-    ).then(lambda m: m, st_chat_msgs, chat).then(
-        update_traces_display, st_traces, traces_display
+        [current_taxon, id_report, st_chat_msgs, st_last_image, st_extra_ctx, st_lc, st_thread, st_status_title, st_status_desc]
+    ).then(
+        lambda m: m, st_chat_msgs, chat
+    ).then(
+        update_status_display, [st_status_title, st_status_desc], status_display
     )
 
     btn_ask.click(
-        do_chat, [user_box, current_taxon, st_chat_msgs, id_report, st_extra_ctx, st_lc, st_thread, st_traces],
-        [st_chat_msgs, user_box, st_lc, st_traces]
+        do_chat, [user_box, current_taxon, st_chat_msgs, id_report, st_extra_ctx, st_lc, st_thread],
+        [st_chat_msgs, user_box, st_lc]
     ).then(lambda m: m, st_chat_msgs, chat)
 
     user_box.submit(
-        do_chat, [user_box, current_taxon, st_chat_msgs, id_report, st_extra_ctx, st_lc, st_thread, st_traces],
-        [st_chat_msgs, user_box, st_lc, st_traces]
+        do_chat, [user_box, current_taxon, st_chat_msgs, id_report, st_extra_ctx, st_lc, st_thread],
+        [st_chat_msgs, user_box, st_lc]
     ).then(lambda m: m, st_chat_msgs, chat)
 
     btn_reset.click(
         reset_all, [],
-        [current_taxon, id_report, st_chat_msgs, st_last_image, st_extra_ctx, st_lc, st_thread, st_traces]
-    ).then(lambda m: m, st_chat_msgs, chat).then(
-        update_traces_display, st_traces, traces_display
+        [current_taxon, id_report, st_chat_msgs, st_last_image, st_extra_ctx, st_lc, st_thread, st_status_title, st_status_desc]
+    ).then(
+        lambda m: m, st_chat_msgs, chat
+    ).then(
+        update_status_display, [st_status_title, st_status_desc], status_display
     )
 
+    # Footer
+    gr.HTML("""
+        <div style="text-align: center; margin-top: 30px; padding: 20px; background: rgba(102, 126, 234, 0.1); border-radius: 15px;">
+            <p style="margin: 0; color: #667eea; font-weight: 500;">
+                🌿 Powered by Advanced AI • Identificación precisa de especies • 🔬 BioIdentify AI
+            </p>
+        </div>
+    """)
+
 if __name__ == "__main__":
-    demo.launch()
+    demo.launch(
+        server_name="0.0.0.0",
+        server_port=7860,
+        share=False,
+        show_error=True
+    )
