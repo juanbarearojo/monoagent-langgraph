@@ -501,7 +501,7 @@ with gr.Blocks(
             size="lg"
         )
     
-                gr.HTML('</div>')
+        gr.HTML('</div>')
 
     # 🔗 Sección de Trazabilidad (OPCIÓN C)
     gr.HTML("""

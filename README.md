@@ -9,6 +9,7 @@ app_file: app.py
 pinned: false
 ---
 
+
 # MonoAgent — Intelligent Primate Agent with LangGraph + Gradio
 
 **MonoAgent** is a personal research project designed to showcase how machine learning, retrieval, and multimodal reasoning can be orchestrated into a unified intelligent agent. Built with **LangGraph** and deployed with **Gradio**, it demonstrates how to create a transparent, traceable, and explainable pipeline that integrates computer vision, large language models, and external knowledge bases.
