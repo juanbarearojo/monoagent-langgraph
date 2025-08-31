@@ -21,17 +21,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      # ---------------------------------------------------------------------------------------
-      # IMPORTANTE (Opción A):
-      # - Este workflow EXCLUYE archivos pesados/binaros (.pt, .faiss, .pdf, etc.) del push.
-      # - Sube MANUALMENTE a Hugging Face (modelo/dataset/space) los siguientes:
-      #     • El modelo (.pt / pesos)        -> p.ej. a un Model repo en HF
-      #     • Los PDFs grandes               -> p.ej. a un Dataset repo o storage separado
-      #     • El índice FAISS (.faiss)       -> si prefieres no reconstruir al arrancar
-      #   En el Space, tu app debe reconstruir el índice si no existe (primer arranque más lento).
-      # ---------------------------------------------------------------------------------------
-
-      - name: Push to Hugging Face Space (exclude big binaries; build FAISS at runtime)
+      - name: Push to Hugging Face Space (exclude cajon_ de sastre + big/binary files)
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           HF_SPACE_REPO: ${{ vars.HF_SPACE_REPO }}
@@ -43,7 +33,6 @@ jobs:
             HF_SPACE_REPO="Barearojojuan/MonoAgent"
           fi
 
-          # Snapshot limpio con exclusiones
           rm -rf _space_out
           mkdir -p _space_out
 
@@ -55,9 +44,10 @@ jobs:
             --exclude '.venv' \
             --exclude '__pycache__' \
             --exclude '.pytest_cache' \
-            --exclude 'cajon_ de sastre' \
-            --exclude 'data/corpus' \
-            --exclude 'labels.json' \
+            --exclude 'cajon_ de sastre/**' \
+            --exclude 'data/corpus/**' \
+            --exclude 'model/labels.json' \
+            --exclude 'model/monkey_classifier_ts-v0.1.pt' \
             --exclude '*.pt' \
             --exclude '*.bin' \
             --exclude '*.onnx' \
@@ -65,13 +55,14 @@ jobs:
             --exclude '*.faiss'
 
           cd _space_out
-
-          # Init y push a Space
           git init
           git config user.email "actions@github.com"
           git config user.name "github-actions[bot]"
           git add -A
-          git commit -m "Deploy (excluding big binaries: .pt, .pdf, .faiss; build index at runtime)"
+          git commit -m "Deploy (excluding cajon_ de sastre + big binaries like .pt/.pdf/.faiss)"
+
+          # Autenticación embebida (como en tu versión que funcionaba)
+          HF_URL="https://user:${HF_TOKEN}@huggingface.co/spaces/${HF_SPACE_REPO}.git"
+          git remote add origin "${HF_URL}"
           git branch -M main
-          git remote add origin https://huggingface.co/spaces/${HF_SPACE_REPO}
-          git push -f origin main
+          git push origin main --force
