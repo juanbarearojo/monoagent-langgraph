@@ -12,12 +12,14 @@ from agent.nodes.gate_uncertainty import gate_uncertainty
 from agent.nodes.map_scientific import map_to_scientific_name
 from agent.nodes.ask_gpt41_vision import ask_gpt41_vision
 from agent.nodes.wiki_fullpage import fetch_wikipedia_fullpage
-from agent.nodes.merge_context import merge_context
 from agent.nodes.finalize import finalize_answer
 from agent.nodes.qa_about_taxon import qa_about_taxon
 from agent.nodes.prompt_for_image import prompt_for_image
 from agent.nodes.clarify import clarify_or_fail
 from agent.nodes.capture_user_taxon import capture_user_taxon
+
+# ✅ RAG node
+from agent.nodes.species_retrieve import species_retrieve
 
 
 def build_graph():
@@ -36,6 +38,8 @@ def build_graph():
     g.add_node("prompt_for_image", prompt_for_image)
     g.add_node("clarify_or_fail", clarify_or_fail)
     g.add_node("capture_user_taxon", capture_user_taxon)
+    # ✅ registra RAG
+    g.add_node("species_retrieve", species_retrieve)
 
     # --- entrada ---
     g.add_edge(START, "router_input")
@@ -67,7 +71,7 @@ def build_graph():
     # infer_local → gate
     g.add_edge("infer_local", "gate_uncertainty")
 
-    # gate → map scientific (ACCEPT) o visión (REVIEW)
+    # gate → (ACCEPT) map_to_scientific_name  |  (REVIEW) ask_gpt41_vision
     def gate_sel(state: ChatVisionState):
         return "map_to_scientific_name" if state.get("_tmp", {}).get("gate") == "ACCEPT" else "ask_gpt41_vision"
 
@@ -77,14 +81,17 @@ def build_graph():
         {"map_to_scientific_name": "map_to_scientific_name", "ask_gpt41_vision": "ask_gpt41_vision"},
     )
 
-    # map_to_scientific_name → wiki (o fallback a visión)
+    # map_to_scientific_name → (si ok) RAG  |  (fallback) visión
     def map_next(state: ChatVisionState):
-        return "ask_gpt41_vision" if state.get("_tmp", {}).get("need_fallback") else "wiki"
+        return "ask_gpt41_vision" if state.get("_tmp", {}).get("need_fallback") else "rag"
 
     g.add_conditional_edges(
         "map_to_scientific_name",
         map_next,
-        {"ask_gpt41_vision": "ask_gpt41_vision", "wiki": "fetch_wikipedia_fullpage"},
+        {
+            "ask_gpt41_vision": "ask_gpt41_vision",
+            "rag": "species_retrieve",  # ✅ va al componente RAG
+        },
     )
 
     # visión → wiki (si ok) o aclarar
@@ -92,18 +99,21 @@ def build_graph():
         latin = state.get("_tmp", {}).get("latin_name")
         return "wiki" if latin else "clarify_or_fail"
 
-
     g.add_conditional_edges(
         "ask_gpt41_vision",
         vision_next,
         {"wiki": "fetch_wikipedia_fullpage", "clarify_or_fail": "clarify_or_fail"},
     )
 
-    # wiki → merge → finalize
+    # ✅ RAG → finalize
+    g.add_edge("species_retrieve", "finalize_answer")
+
+    # ✅ Wikipedia → finalize
     g.add_edge("fetch_wikipedia_fullpage", "finalize_answer")
+
     g.add_edge("finalize_answer", END)
 
-    # (opcional) Q&A post‑respuesta
+    # (opcional) Q&A post-respuesta
     g.add_edge("qa_about_taxon", END)
 
     return g.compile()
