@@ -1,0 +1,14 @@
+{
+  "embedding_model": "sentence-transformers/all-MiniLM-L6-v2",
+  "dimension": 384,
+  "built_at": "2025-08-31T16:12:19.764885Z",
+  "chunks": 310,
+  "corpus_dir": "data/corpus",
+  "openai_docmeta": true,
+  "openai_section": true,
+  "hnsw_m": 32,
+  "hnsw_efConstruction": 200,
+  "efSearch_default": 64,
+  "tqdm": true,
+  "heartbeat_every": 200
+}
