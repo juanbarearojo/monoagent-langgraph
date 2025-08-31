@@ -7,7 +7,7 @@ sdk: gradio
 sdk_version: "5.42.0"
 app_file: app.py
 pinned: false
--------------
+---
 
 # MonoAgent — Intelligent Primate Agent with LangGraph + Gradio
 
