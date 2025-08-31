@@ -1,5 +1,6 @@
 # agent/nodes/finalize.py
-from typing import Any, Dict, List
+from __future__ import annotations
+from typing import Any, Dict, List, Optional
 from langchain_core.messages import AIMessage
 
 from agent.prompts import PROMPT_FINALIZE
@@ -61,7 +62,7 @@ def _build_context_from_wiki(state: Dict[str, Any], latin: str) -> Dict[str, Any
     if url:
         sources.append({"title": title or latin or "Wikipedia", "url": url})
     else:
-        # Fallback razonable si no hubiera url (no es tu caso, pero por si acaso)
+        # Fallback razonable si no hubiera url
         q = (title or latin).replace(" ", "_")
         sources.append({"title": title or latin or "Wikipedia", "url": f"https://en.wikipedia.org/wiki/{q}"})
 
@@ -71,7 +72,70 @@ def _build_context_from_wiki(state: Dict[str, Any], latin: str) -> Dict[str, Any
     return {"context_md": context_md, "sources": sources}
 
 
+def _build_context_from_rag(
+    state: Dict[str, Any],
+    max_docs: int = 5,
+    max_chars_per_doc: int = 1200
+) -> Dict[str, Any]:
+    """
+    Construye:
+      - rag_md: bloques <RAGDOC> con snippets truncados
+      - rag_sources: [{'title','url'}]-like; aquí usamos 'file' como 'title' (sin URL)
+    """
+    docs = state.get("rag_docs") or []
+    meta = state.get("rag_meta") or []
+    if not docs or not meta:
+        return {"rag_md": "", "rag_sources": []}
+
+    blocks: List[str] = []
+    rag_sources: List[Dict[str, str]] = []
+    used_files = set()
+
+    for i, (txt, m) in enumerate(zip(docs[:max_docs], meta[:max_docs]), start=1):
+        sec = m.get("section") or "Body"
+        latin = m.get("latin_name") or ""
+        year = m.get("year")
+        file = m.get("file") or "local-index"
+
+        # Fuente local sin URL
+        if file not in used_files:
+            label = f"{file} ({sec}{', '+str(year) if year else ''})"
+            rag_sources.append({"title": label, "url": ""})
+            used_files.add(file)
+
+        snippet = (txt or "").strip()
+        if len(snippet) > max_chars_per_doc:
+            snippet = snippet[:max_chars_per_doc].rsplit(" ", 1)[0] + "…"
+
+        blocks.append(
+            f'<RAGDOC n="{i}" section="{sec}" latin="{latin}" file="{file}" year="{year or ""}">\n'
+            f"{snippet}\n"
+            f"</RAGDOC>"
+        )
+
+    rag_md = "<RAG>\n" + "\n\n".join(blocks) + "\n</RAG>"
+    return {"rag_md": rag_md, "rag_sources": rag_sources}
+
+
+def _format_sources_bullets(sources: List[Dict[str, str]]) -> str:
+    """
+    Devuelve bullets Markdown. Si hay URL → enlace; si no, texto plano.
+    """
+    if not sources:
+        return ""
+    lines: List[str] = []
+    for s in sources:
+        title = s.get("title") or "Fuente"
+        url = s.get("url") or ""
+        if url:
+            lines.append(f"- [{title}]({url})")
+        else:
+            lines.append(f"- {title}")
+    return "\n".join(lines)
+
+
 def finalize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
+    # DEBUG wiki
     w = state.get("wiki")
     print(f"[finalize] has_wiki={isinstance(w, dict)} "
           f"title={w.get('title') if isinstance(w, dict) else None} "
@@ -85,10 +149,19 @@ def finalize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
         or "—"
     )
 
-    # Construye contexto desde WIKI (ya no dependemos de merge_context)
-    ctx = _build_context_from_wiki(state, latin)
-    context_md = ctx["context_md"]
-    sources: List[Dict[str, str]] = ctx["sources"]
+    # ---- Contexto desde WIKI
+    wiki_ctx = _build_context_from_wiki(state, latin)
+    wiki_md = wiki_ctx["context_md"]
+    wiki_sources = wiki_ctx["sources"]
+
+    # ---- Contexto desde RAG (si existe)
+    rag_ctx = _build_context_from_rag(state, max_docs=int(state.get("topk", 3) or 3))
+    rag_md = rag_ctx["rag_md"]
+    rag_sources = rag_ctx["rag_sources"]
+
+    # ---- Combinar contextos y fuentes
+    combined_context = "\n\n".join([p for p in [wiki_md, rag_md] if p]).strip()
+    sources: List[Dict[str, str]] = wiki_sources + rag_sources
 
     # Transparencia del clasificador local si existe
     p1 = state.get("_tmp", {}).get("p1")
@@ -98,37 +171,33 @@ def finalize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
         transparency = f"\n\n(Confianza local: {p1:.2f} · Entropía: {entropy:.2f})"
 
     # Formateo de fuentes (Markdown)
-    bullet_sources = ""
-    if sources:
-        bullet_sources = "\n".join(
-            f"- [{s.get('title','Fuente')}]({s.get('url')})"
-            for s in sources if s.get("url")
-        )
+    bullet_sources = _format_sources_bullets(sources)
 
-    # Prompt final a GPT (contexto truncado a 4000)
+    # Prompt final a GPT (contexto truncado)
     prompt_context = _truncate(
-        context_md + ("\n\n" + bullet_sources if bullet_sources else ""),
-        max_chars=8000,
+        combined_context + ("\n\n" + bullet_sources if bullet_sources else ""),
+        max_chars=int(state.get("context_max_chars", 8000)),
     )
     prompt = PROMPT_FINALIZE.format(latin=latin, context=prompt_context)
 
     # DEBUG
-    print(f"[finalize] latin={latin!r} ctx_len={len(prompt_context)} sources={len(sources)}")
+    print(f"[finalize] latin={latin!r} ctx_len={len(prompt_context)} sources={len(sources)} "
+          f"rag_present={bool(rag_md)}")
 
     result = ask_gpt_text(prompt)
     answer = result.get("answer", "").strip() if isinstance(result, dict) else str(result)
 
     if not answer:
         # Fallback simple si GPT no contesta
-        answer = f"**Especie identificada:** *{latin}*\n\n{context_md}"
+        answer = f"**Especie identificada:** *{latin}*\n\n{combined_context}"
 
     msg = answer + (transparency if transparency else "")
 
-    # Cerrar conversación: limpiar efímeros y añadir mensaje
-    cleaned: Dict[str, Any] = {k: v for k, v in state.items() if not str(k).startswith("_tmp")}
-    messages = list(cleaned.get("messages", [])) + [AIMessage(content=msg)]
-    cleaned["messages"] = messages
-    cleaned["current_taxon"] = latin
-    cleaned["sources"] = sources
-
-    return cleaned
+    # ✅ Devolver SOLO updates (no el estado completo)
+    updates: Dict[str, Any] = {
+        "messages": [AIMessage(content=msg)],
+        "current_taxon": latin,
+        "sources": sources,   # para interfaz/telemetría
+        "_tmp": {},           # limpia efímeros
+    }
+    return updates

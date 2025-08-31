@@ -5,12 +5,9 @@ from agent.tools.rag_index import retrieve_species
 
 def species_retrieve(state: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Nodo LangGraph:
-      - Toma el taxón actual del estado
-      - Recupera hasta 'topk' trozos de RAG para esa especie
-      - Escribe:
-          state["rag_docs"]: List[str]
-          state["rag_meta"]: List[dict]
+    Devuelve SOLO updates:
+      - rag_docs: List[str]
+      - rag_meta: List[dict]
     """
     latin = (
         state.get("current_taxon")
@@ -18,19 +15,14 @@ def species_retrieve(state: Dict[str, Any]) -> Dict[str, Any]:
         or ""
     ).strip()
 
-    k = int(state.get("topk", 3)) or 3
+    k = int(state.get("topk", 3) or 3)
 
     if not latin:
-        state["rag_docs"] = []
-        state["rag_meta"] = []
-        return state
+        print("[species_retrieve] sin taxón → 0 docs")
+        return {"rag_docs": [], "rag_meta": []}
 
     docs = retrieve_species(latin, top_k_sections=k)
-    state["rag_docs"] = [d.get("text","") for d in docs]
-    # guarda metadata en raíz (no mezclar con _tmp para que no se limpie)
-    state["rag_meta"] = docs
-
-    # DEBUG visible en consola
+    rag_docs = [d.get("text", "") for d in docs]
     print(f"[species_retrieve] latin={latin!r} -> {len(docs)} docs")
 
-    return state
+    return {"rag_docs": rag_docs, "rag_meta": docs}
