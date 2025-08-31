@@ -18,7 +18,8 @@ class ChatVisionState(TypedDict, total=False):
     current_taxon: Optional[str]
     wiki: Dict[str, Any]           # 👈 MUY IMPORTANTE (title, url, plain_text, infobox, status)
 
-
+    rag_docs: list[str] 
+    rag_meta: list[dict]   
     # ⚠️ EPHEMERAL (debe existir para que LangGraph no lo “ignore”)
     _tmp: Dict[str, Any]
 

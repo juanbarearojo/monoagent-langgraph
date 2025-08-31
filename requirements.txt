@@ -9,3 +9,7 @@ requests
 beautifulsoup4
 openai
 langfuse
+sentence-transformers
+faiss-cpu
+pypdf
+langchain
