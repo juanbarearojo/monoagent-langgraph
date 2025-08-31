@@ -38,20 +38,32 @@ jobs:
 
           rsync -a ./ _space_out \
             --exclude '.git' \
+            --exclude '.gitattributes' \
+            --exclude '.gitmodules' \
+            --exclude '.env' \
+            --exclude '.venv' \
+            --exclude '__pycache__' \
+            --exclude '.pytest_cache' \
             --exclude 'cajon_ de sastre/**' \
+            --exclude 'data/corpus/**' \
+            --include 'data/corpus/*.md' \
             --exclude 'model/labels.json' \
             --exclude 'model/monkey_classifier_ts-v0.1.pt' \
-            --include 'data/corpus/*.md' \
-            --exclude 'data/corpus/**'
+            --exclude '*.pt' \
+            --exclude '*.bin' \
+            --exclude '*.onnx' \
+            --exclude '*.pdf' \
+            --exclude '*.faiss'
 
           cd _space_out
           git init
           git config user.email "actions@github.com"
           git config user.name "github-actions[bot]"
           git add -A
-          git commit -m "Deploy (excluding cajon_ de sastre + model .pt + labels.json + PDFs in data/corpus)"
+          git commit -m "Deploy (excluding cajon_ de sastre + big binaries like .pt/.pdf/.faiss)"
 
-          HF_URL="https://user:${HF_TOKEN}@huggingface.co/spaces/${HF_SPACE_REPO}"
+          # Autenticación embebida (como en tu versión que funcionaba)
+          HF_URL="https://user:${HF_TOKEN}@huggingface.co/spaces/${HF_SPACE_REPO}.git"
           git remote add origin "${HF_URL}"
           git branch -M main
           git push origin main --force
