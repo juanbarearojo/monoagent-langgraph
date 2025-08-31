@@ -8,12 +8,52 @@ import faiss
 
 try:
     from sentence_transformers import SentenceTransformer
-except Exception as e:
-    SentenceTransformer = None  # permitirá usar retrieve_species(queryless) aunque falte el modelo
+except Exception:
+    SentenceTransformer = None
 
-# --- Rutas / singletons -------------------------------------------------------
-ROOT = Path(__file__).resolve().parents[1]
-IDX_DIR = ROOT / "indices" / "global"
+# ---------------- Paths / discovery ----------------
+def _guess_idx_dir() -> Path:
+    """
+    Descubre indices/global con orden de prioridad:
+      1) RAG_INDEX_DIR (env)
+      2) <repo root>/indices/global      (# típico: monoagent-langgraph/indices/global)
+      3) CWD/indices/global
+      4) agent/indices/global            (legacy)
+    """
+    # 1) env var
+    env = os.getenv("RAG_INDEX_DIR")
+    if env:
+        p = Path(env)
+        if (p / "meta.jsonl").exists() and (p / "dense.faiss").exists():
+            return p
+
+    here = Path(__file__).resolve()
+    candidates: list[Path] = []
+
+    # 2) repo root ≈ subir 2 o 3 niveles según layout
+    # .../agent/tools/rag_index.py -> parents[2] ~= repo root
+    if len(here.parents) >= 3:
+        candidates.append(here.parents[2] / "indices" / "global")
+    if len(here.parents) >= 4:
+        candidates.append(here.parents[3] / "indices" / "global")
+
+    # 3) CWD
+    candidates.append(Path.cwd() / "indices" / "global")
+
+    # 4) legacy: agent/indices/global
+    if len(here.parents) >= 2:
+        candidates.append(here.parents[1] / "indices" / "global")
+
+    for c in candidates:
+        if (c / "meta.jsonl").exists() and (c / "dense.faiss").exists():
+            return c
+
+    # último recurso: el más probable (repo root /indices/global)
+    fallback = (here.parents[2] / "indices" / "global") if len(here.parents) >= 3 else Path.cwd() / "indices" / "global"
+    return fallback
+
+ROOT = Path(__file__).resolve().parents[1]  # agent/
+IDX_DIR = _guess_idx_dir()
 META_PATH = IDX_DIR / "meta.jsonl"
 FAISS_PATH = IDX_DIR / "dense.faiss"
 
@@ -31,18 +71,25 @@ def _load_meta() -> List[Dict[str, Any]]:
     global _META
     if _META is None:
         if not META_PATH.exists():
-            raise FileNotFoundError(f"meta.jsonl no encontrado: {META_PATH}")
-        _META = []
-        with open(META_PATH, "r", encoding="utf-8") as f:
-            for line in f:
-                _META.append(json.loads(line))
+            raise FileNotFoundError(
+                f"meta.jsonl no encontrado: {META_PATH}\n"
+                f"Sugerencias:\n"
+                f"  - Exporta RAG_INDEX_DIR=RUTA\\a\\indices\\global\n"
+                f"  - Verifica que ejecutaste build_index.py y existen dense.faiss/meta.jsonl.\n"
+            )
+        _META = [json.loads(line) for line in META_PATH.read_text(encoding="utf-8").splitlines()]
     return _META
 
 def _load_index() -> faiss.Index:
     global _INDEX
     if _INDEX is None:
         if not FAISS_PATH.exists():
-            raise FileNotFoundError(f"dense.faiss no encontrado: {FAISS_PATH}")
+            raise FileNotFoundError(
+                f"dense.faiss no encontrado: {FAISS_PATH}\n"
+                f"Sugerencias:\n"
+                f"  - Exporta RAG_INDEX_DIR=RUTA\\a\\indices\\global\n"
+                f"  - Verifica que ejecutaste build_index.py.\n"
+            )
         _INDEX = faiss.read_index(str(FAISS_PATH))
     return _INDEX
 
@@ -58,14 +105,10 @@ def _load_model() -> Any:
 def _encode(texts: Sequence[str]) -> np.ndarray:
     model = _load_model()
     X = model.encode(list(texts), normalize_embeddings=True)
-    X = np.asarray(X, dtype="float32")
-    return X
+    return np.asarray(X, dtype="float32")
 
 def _sim_from_l2sq(d: float) -> float:
-    """
-    Con embeddings unitarios: L2^2 = 2(1 - cos). Aproximamos similitud coseno:
-    sim = 1 - d/2  (acotado a [0,1]).
-    """
+    # Con embeddings unitarios: L2^2 = 2(1 - cos)
     s = 1.0 - float(d)/2.0
     return max(0.0, min(1.0, s))
 
@@ -77,22 +120,16 @@ def search(
     filter_species_id: Optional[str] = None,
     filter_sections: Optional[Sequence[str]] = None,
 ) -> List[Dict[str, Any]]:
-    """
-    Busca por consulta libre. Devuelve lista de dicts con:
-      { id, text, file, section, latin_name, species_id, year, dist, score }
-
-    score = sim * w_section  (w_section según prioridad)
-    """
     meta = _load_meta()
     index = _load_index()
 
     qv = _encode([query])
-    K = max(k*4, 20)  # recupera más y reordena
+    K = max(k*4, 20)
     D, I = index.search(qv, K)
     cand: List[Dict[str, Any]] = []
 
     for d, idx in zip(D[0], I[0]):
-        if int(idx) < 0:  # por si FAISS devuelve -1
+        if int(idx) < 0:
             continue
         m = meta[idx]
         if filter_latin and (m.get("latin_name","").lower() != filter_latin.lower()):
@@ -111,16 +148,11 @@ def search(
         out.update({"dist": float(d), "score": float(score)})
         cand.append(out)
 
-    # re-rank y top-k
     cand.sort(key=lambda x: x["score"], reverse=True)
     return cand[:k]
 
 # --- Retrieval por especie (queryless) ---------------------------------------
 def retrieve_species(latin_name: str, top_k_sections: int = 3) -> List[Dict[str, Any]]:
-    """
-    Toma TODOS los chunks de esa especie y elige hasta top_k_sections priorizando
-    secciones distintas según SECTION_ORDER.
-    """
     meta = _load_meta()
     ln = (latin_name or "").strip().lower()
     cand = [m for m in meta if (m.get("latin_name","").lower() == ln)]
@@ -130,16 +162,12 @@ def retrieve_species(latin_name: str, top_k_sections: int = 3) -> List[Dict[str,
     chosen: List[Dict[str, Any]] = []
     used_secs = set()
 
-    # 1) cubrir secciones prioritarias
     for sec in SECTION_ORDER:
         if len(chosen) >= top_k_sections: break
         for m in cand:
             if m.get("section") == sec and sec not in used_secs:
-                chosen.append(m)
-                used_secs.add(sec)
-                break
+                chosen.append(m); used_secs.add(sec); break
 
-    # 2) rellenar con cualquiera para completar K
     if len(chosen) < top_k_sections:
         for m in cand:
             if len(chosen) >= top_k_sections: break
@@ -148,14 +176,11 @@ def retrieve_species(latin_name: str, top_k_sections: int = 3) -> List[Dict[str,
 
     return chosen[:top_k_sections]
 
-# --- Calentamiento (opcional) -------------------------------------------------
-def warmup(load_model: bool = False) -> Tuple[int, int]:
-    """
-    Carga meta/índice (y modelo si load_model=True). Devuelve (#chunks, dim)
-    """
+# --- Calentamiento ------------------------------------------------------------
+def warmup(load_model: bool = False) -> Tuple[int, int, str]:
     meta = _load_meta()
     index = _load_index()
     if load_model:
         _load_model()
     dim = int(getattr(index, "d", 0))
-    return len(meta), dim
+    return len(meta), dim, str(IDX_DIR)
