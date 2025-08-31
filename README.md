@@ -72,16 +72,7 @@ The agent is orchestrated through a **LangGraph computation graph**. Each node r
 7. Information is merged into a coherent, traceable answer.
 8. The agent responds, or asks the user for clarification when needed.
 
-## Project Structure
 
-```
-app.py
-requirements.txt
-model/
- ├─ monkey_classifier_ts-v0.1.pt
- └─ labels.json
-grafo.png   # visual diagram of the agent
-```
 
 ## Running Locally
 
