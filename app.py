@@ -515,7 +515,7 @@ with gr.Blocks(
     gr.HTML("""
         <div style="text-align: center; margin-top: 30px; padding: 20px; background: rgba(102, 126, 234, 0.1); border-radius: 15px;">
             <p style="margin: 0; color: #667eea; font-weight: 500;">
-                🌿 Powered by Advanced AI • Identificación precisa de especies • 🔬 BioIdentify AI
+                🌿 Identificación precisa de especies • 🔬 BioIdentify AI
             </p>
         </div>
     """)
