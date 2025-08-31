@@ -45,8 +45,7 @@ jobs:
             --exclude '__pycache__' \
             --exclude '.pytest_cache' \
             --exclude 'cajon_ de sastre/**' \
-            --exclude 'data/corpus/**' \
-            --include 'data/corpus/*.md' \
+            --exclude 'data/corpus/*.pdf' \
             --exclude 'model/labels.json' \
             --exclude 'model/monkey_classifier_ts-v0.1.pt' \
             --exclude '*.pt' \
