@@ -9,73 +9,92 @@ app\_file: app.py
 pinned: false
 -------------
 
-# MonoAgent — Agente con LangGraph + Gradio
+# MonoAgent — Intelligent Primate Agent with LangGraph + Gradio
 
-**MonoAgent** es un agente construido con **LangGraph** que integra un clasificador de primates, recuperación de contexto externo y capacidades de razonamiento con LLMs multimodales. Se ejecuta en **Gradio** y está pensado como un asistente zoológico capaz de identificar especies y responder preguntas con información científica adicional.
+**MonoAgent** is a personal research project designed to showcase how machine learning, retrieval, and multimodal reasoning can be orchestrated into a unified intelligent agent. Built with **LangGraph** and deployed with **Gradio**, it demonstrates how to create a transparent, traceable, and explainable pipeline that integrates computer vision, large language models, and external knowledge bases.
 
-* **Código (GitHub):** [https://github.com/juanbarearojo/monoagent-langgraph](https://github.com/juanbarearojo/monoagent-langgraph)
-* **Space (Hugging Face):** [https://huggingface.co/spaces/Barearojojuan/MonoAgent](https://huggingface.co/spaces/Barearojojuan/MonoAgent)
+* **GitHub Repository:** [https://github.com/juanbarearojo/monoagent-langgraph](https://github.com/juanbarearojo/monoagent-langgraph)
+* **Hugging Face Space:** [https://huggingface.co/spaces/Barearojojuan/MonoAgent](https://huggingface.co/spaces/Barearojojuan/MonoAgent)
 
-## Arquitectura del agente
+## Why MonoAgent?
 
-El agente se organiza en torno a un **grafo de nodos** definido en `agent/graph.py`. Cada nodo encapsula una función específica, y el estado fluye entre ellos según las condiciones y políticas definidas en `agent/state.py` y `agent/policies.py`.
+* 🧠 **Hybrid Reasoning** → Combines a local deep learning classifier with external retrieval (Wikipedia + FAISS RAG) and GPT-4 Vision for robust out-of-distribution handling.
+* 🔎 **Transparency & Traceability** → Integrated with **Langfuse** for observability and experiment tracking, making every step in the pipeline auditable.
+* 🕸 **Graph-based Orchestration** → Fully powered by **LangGraph**, ensuring modularity, extensibility, and clear visualization of the workflow.
+* 📚 **Knowledge-Enriched Answers** → Goes beyond simple classification, providing scientifically grounded, contextual responses.
+* 🚀 **Portable & Presentable** → Clean **Gradio** interface, accessible locally or on Hugging Face Spaces.
+
+## Agent Architecture
+
+The agent is orchestrated through a **LangGraph computation graph**. Each node represents a functional step, and the conversation state flows between them under policies defined in `agent/state.py` and `agent/policies.py`.
 
 <p align="center">
-  <img src="grafo.png" alt="grafo del agente" width="600"/>
+  <img src="grafo.png" alt="agent graph" width="600"/>
 </p>
 
-### Nodos principales
+### Core Nodes
 
-* **router\_input (`agent/nodes/router.py`)** → Clasifica la entrada inicial (imagen o texto).
-* **ensure\_image (`agent/nodes/ensure_image.py`)** → Comprueba si hay imagen disponible o solicita una.
-* **infer\_local (`agent/nodes/infer_local.py`)** → Ejecuta el clasificador TorchScript (`model/monkey_classifier_ts-v0.1.pt`).
-* **gate\_uncertainty (`agent/nodes/gate_uncertainty.py`)** → Evalúa la confianza de la predicción; si es baja, deriva a GPT‑4 Vision.
-* **map\_to\_scientific\_name (`agent/nodes/map_scientific.py`)** → Traduce etiquetas internas al nombre científico usando `agent/labels.py`.
-* **ask\_gpt41\_vision (`agent/nodes/ask_gpt41_vision.py`)** → LLM multimodal para casos fuera de distribución.
-* **species\_retrieve (`agent/nodes/species_retrieve.py`)** → Recuperación semántica (RAG) con índices FAISS (`indices/global/`).
-* **fetch\_wikipedia\_fullpage (`agent/nodes/wiki_fullpage.py`)** → Descarga y procesa páginas completas de Wikipedia.
-* **merge\_context (`agent/nodes/merge_context.py`)** → Combina información de Wikipedia y RAG.
-* **finalize (`agent/nodes/finalize.py`)** → Construye la respuesta final para el usuario.
-* **qa\_about\_taxon (`agent/nodes/qa_about_taxon.py`)** → Responde preguntas directas sobre un taxón ya identificado.
-* **clarify (`agent/nodes/clarify.py`)** y **prompt\_for\_image (`agent/nodes/prompt_for_image.py`)** → Manejo de casos en los que falta información.
-* **capture\_user\_taxon (`agent/nodes/capture_user_taxon.py`)** → Permite al usuario proporcionar manualmente el nombre del taxón.
+* **router\_input (`agent/nodes/router.py`)** → Routes initial input (image or text).
+* **ensure\_image (`agent/nodes/ensure_image.py`)** → Validates image presence or prompts the user.
+* **infer\_local (`agent/nodes/infer_local.py`)** → Runs the TorchScript primate classifier (`model/monkey_classifier_ts-v0.1.pt`).
+* **gate\_uncertainty (`agent/nodes/gate_uncertainty.py`)** → Evaluates classifier confidence; low-confidence predictions are redirected to GPT-4 Vision.
+* **map\_to\_scientific\_name (`agent/nodes/map_scientific.py`)** → Maps internal classifier labels to canonical scientific names.
+* **ask\_gpt41\_vision (`agent/nodes/ask_gpt41_vision.py`)** → Multimodal LLM for out-of-distribution cases.
+* **species\_retrieve (`agent/nodes/species_retrieve.py`)** → Retrieves semantically relevant documents from FAISS indices (`indices/global/`).
+* **fetch\_wikipedia\_fullpage (`agent/nodes/wiki_fullpage.py`)** → Fetches and processes complete Wikipedia pages.
+* **merge\_context (`agent/nodes/merge_context.py`)** → Merges Wikipedia and RAG context.
+* **finalize (`agent/nodes/finalize.py`)** → Generates the final enriched answer.
+* **qa\_about\_taxon (`agent/nodes/qa_about_taxon.py`)** → Handles user queries about identified taxa.
+* **clarify / prompt\_for\_image (`agent/nodes/clarify.py`, `agent/nodes/prompt_for_image.py`)** → Resolves missing or ambiguous inputs.
+* **capture\_user\_taxon (`agent/nodes/capture_user_taxon.py`)** → Allows manual input of taxon names.
 
-### Herramientas (`agent/tools/`)
+### Tools (`agent/tools/`)
 
-* **ddg.py** → Búsqueda DuckDuckGo.
-* **wiki.py** → Descarga de artículos de Wikipedia.
-* **vision.py** → Inferencia con modelos multimodales.
-* **gpt.py** → Conexión con LLMs (GPT‑4/3.5).
-* **rag\_index.py** → Construcción y búsqueda en índices FAISS.
+* **wiki.py** → Wikipedia article fetcher.
+* **vision.py** → Vision model utilities.
+* **gpt.py** → GPT connectors.
+* **rag\_index.py** → FAISS-based semantic indexing and retrieval.
 
-### Utilidades (`agent/utils/`)
+### Utilities (`agent/utils/`)
 
-* **images.py** → Procesamiento de imágenes y conversión a bytes.
-* **text.py** → Normalización y validaciones de texto.
+* **images.py** → Image processing and conversion.
+* **text.py** → Text normalization and validation.
 
-## Flujo general
+## Workflow
 
-1. El usuario envía una imagen o pregunta.
-2. El sistema valida la entrada (router/ensure\_image).
-3. Si hay imagen → se ejecuta el clasificador local.
-4. Se evalúa la confianza → si es baja, se consulta a GPT‑4 Vision.
-5. El resultado se mapea a nombre científico.
-6. Se buscan artículos completos de Wikipedia y contexto adicional en el índice RAG.
-7. Se combinan las fuentes en una respuesta final.
-8. El agente responde o pide aclaraciones si falta información.
+1. User submits an image or a question.
+2. Input is validated and routed to the appropriate path.
+3. Local classifier attempts prediction.
+4. Confidence is checked; low-confidence results invoke GPT-4 Vision.
+5. Prediction is mapped to a scientific name.
+6. Wikipedia and FAISS retrieval provide external context.
+7. Information is merged into a coherent, traceable answer.
+8. The agent responds, or asks the user for clarification when needed.
 
-## Ejecución local
+## Project Structure
+
+```
+app.py
+requirements.txt
+model/
+ ├─ monkey_classifier_ts-v0.1.pt
+ └─ labels.json
+grafo.png   # visual diagram of the agent
+```
+
+## Running Locally
 
 ```bash
 pip install -r requirements.txt
 python app.py
 ```
 
-## Notas de despliegue
+## Deployment Notes
 
-* El flujo de CI/CD prepara automáticamente la versión para Hugging Face Space.
-* Los binarios grandes (`.pt`, `.faiss`, PDFs de `data/corpus/`) pueden gestionarse con **Git LFS**.
+* CI/CD mirrors the project to Hugging Face Spaces.
+* Large files (`.pt`, `.faiss`, PDFs in `data/corpus/`) should be managed with **Git LFS**.
+* **Langfuse integration** ensures experiment tracking, debugging, and transparency.
 
-## Licencia
+## License
 
 MIT
